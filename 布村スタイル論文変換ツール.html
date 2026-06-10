@@ -1,0 +1,341 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="robots" content="noindex, nofollow">
+    <title>布村スタイル論文文体変換ツール（第二言語習得分野）</title>
+    <style>
+        body {
+            font-family: 'Helvetica Neue', Arial, 'Hiragino Kaku Gothic ProN', 'Hiragino Sans', Meiryo, sans-serif;
+            line-height: 1.7;
+            color: #333;
+            max-width: 900px;
+            margin: 20px auto;
+            padding: 0 15px;
+        }
+        h1, h2, h3 {
+            color: rgb(93, 43, 129);
+            margin-top: 1.5em;
+            margin-bottom: 0.8em;
+        }
+        h1 {
+            text-align: center;
+            border-bottom: 2px solid rgb(93, 43, 129);
+            padding-bottom: 10px;
+            font-size: 1.6em;
+        }
+        h1 small {
+            display: block;
+            font-size: 0.6em;
+            color: #555;
+            margin-top: 5px;
+            font-weight: normal;
+        }
+        h2 {
+            border-bottom: 1px solid #ccc;
+            padding-bottom: 8px;
+            font-size: 1.3em;
+        }
+        textarea {
+            width: 100%;
+            box-sizing: border-box;
+            font-size: 0.95em;
+            line-height: 1.7;
+            padding: 10px;
+            border: 1px solid #ccc;
+            border-radius: 5px;
+            font-family: inherit;
+        }
+        #inputText { min-height: 220px; }
+        button {
+            background-color: rgb(93, 43, 129);
+            color: #fff;
+            border: none;
+            border-radius: 5px;
+            padding: 10px 18px;
+            font-size: 1em;
+            cursor: pointer;
+            margin: 5px 8px 5px 0;
+        }
+        button:hover { background-color: rgb(120, 65, 160); }
+        button:disabled { background-color: #aaa; cursor: not-allowed; }
+        button.secondary { background-color: rgb(0, 115, 187); }
+        button.secondary:hover { background-color: rgb(40, 145, 210); }
+        .panel {
+            background-color: #f8f8f8;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+            padding: 15px;
+            margin-bottom: 1em;
+        }
+        #output {
+            background-color: #fff;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+            padding: 15px;
+            min-height: 100px;
+            white-space: pre-wrap;
+            word-wrap: break-word;
+        }
+        .note { font-size: 0.85em; color: #666; }
+        .warn {
+            background-color: #fff6e5;
+            border-left: 5px solid #e6a700;
+            padding: 8px 12px;
+            font-size: 0.9em;
+            margin: 1em 0;
+        }
+        input[type="password"], input[type="text"] {
+            width: 100%;
+            box-sizing: border-box;
+            padding: 8px;
+            border: 1px solid #ccc;
+            border-radius: 5px;
+        }
+        details summary {
+            cursor: pointer;
+            color: rgb(93, 43, 129);
+            font-weight: bold;
+            margin: 0.8em 0;
+        }
+        #status { font-size: 0.9em; color: rgb(0, 115, 187); min-height: 1.4em; }
+        pre.styleguide {
+            background-color: #f8f8f8;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+            padding: 15px;
+            white-space: pre-wrap;
+            font-size: 0.85em;
+            max-height: 400px;
+            overflow-y: auto;
+        }
+    </style>
+</head>
+<body>
+    <h1>布村スタイル論文文体変換ツール
+        <small>日本語論文の一部を、第二言語習得（中間言語音韻論・日本語教育）分野の論文として自然な文体に変換します</small>
+    </h1>
+
+    <p>このツールは、布村猛の以下の3つの論文から抽出した文体・語彙・論旨展開の特徴（文体プロファイル）に基づいて、入力された日本語論文の文章を書き換えます。</p>
+    <ul>
+        <li>布村猛（2023）「L2日本語を対象とする中間言語音声コーパスの開発」『日本語・日本学研究』第13号</li>
+        <li>布村猛・海野多枝（2018）「上級学習者と初級学習者の日本語音声：ディフレージングの生起に注目して」『外国語教育研究』第21号</li>
+        <li>布村猛（2016）『日本語の中間言語音韻論―日本語学習者音声コーパス作成の試み―』平成28年度修士論文（東京外国語大学）</li>
+    </ul>
+
+    <h2>1. 変換したい文章を入力</h2>
+    <textarea id="inputText" placeholder="ここに日本語論文の一部（数段落程度）を貼り付けてください。内容（主張・データ・引用）は保持したまま、文体のみが変換されます。"></textarea>
+
+    <h2>2. 変換方法を選択</h2>
+    <div class="panel">
+        <p><strong>方法A：プロンプトをコピーして生成AIに貼り付ける</strong>（APIキー不要。Gemini・ChatGPT・Claude等のチャット画面で使えます）</p>
+        <button class="secondary" id="copyPromptBtn">変換用プロンプトをコピー</button>
+    </div>
+    <div class="panel">
+        <p><strong>方法B：Claude APIで直接変換する</strong>（Anthropic APIキーが必要です）</p>
+        <label for="apiKey">Anthropic APIキー（このブラウザ内にのみ保存されます）</label>
+        <input type="password" id="apiKey" placeholder="sk-ant-...">
+        <div class="warn">APIキーはお使いのブラウザのlocalStorageにのみ保存され、このページのサーバーには送信されません。共用PCでは使用後に「キーを消去」を押してください。</div>
+        <button id="convertBtn">Claude APIで変換する</button>
+        <button class="secondary" id="clearKeyBtn">キーを消去</button>
+        <p id="status"></p>
+    </div>
+
+    <h2>3. 変換結果</h2>
+    <div id="output"></div>
+    <button class="secondary" id="copyOutputBtn">変換結果をコピー</button>
+
+    <details>
+        <summary>このツールが使用している文体プロファイルを表示する</summary>
+        <pre class="styleguide" id="styleGuideView"></pre>
+    </details>
+
+    <script>
+// =====================================================================
+// 文体プロファイル：布村猛の3論文（2016修士論文・2018共著論文・2023単著論文）
+// のすべてを分析して抽出した、文体・語彙・論旨展開の特徴。
+// =====================================================================
+const STYLE_GUIDE = `あなたは、第二言語習得（SLA）・中間言語音韻論・日本語教育を専門とする研究者「布村猛」の論文の文体を完全に再現する文体変換の専門家である。入力された日本語論文の一部を、内容（主張・データ・数値・引用元）を一切変えずに、以下の文体プロファイルに従って第二言語習得分野の論文として自然な文章に書き換えること。
+
+【文体プロファイル：布村猛の論文の特徴】
+
+■ 1. 文末表現・モダリティ
+- 断定を避けた緩叙的な文末を基本とする：「〜と考えられる」「〜と考えることができる」「〜であろう」「〜と言えよう」「〜とすることができる」「〜可能性がある」「〜ことが期待される」
+- 必要性・提案：「〜する必要がある」「〜が望ましいと考えられる」「〜が求められる」「〜なければならない」「〜を適切に選定する必要がある」
+- 可能化の表現を多用：「〜することが可能となっている」「〜できるようになる」「〜が可能となるであろう」
+- 理由の後置で文・段落を締める：「……からである。」（直前に述べた主張の根拠を、独立した一文で後から与える）
+- 列挙の受け：「〜として（は）、…が挙げられる」
+- 示唆：「〜が示唆されている」「〜への示唆を与えることができると考える」
+- 評価：「〜であると評価できる」「〜という点で大きな貢献であると考えることができる」
+
+■ 2. 接続表現・談話標識
+- 逆接は「しかしながら」を基本とする（「しかし」より優先）。対比は「その一方で」
+- 添加は「また」「さらに」、換言は「つまり」、帰結は「ゆえに」「以上のことから」「以上より」
+- 順序立て：「まず」「次に」「最後に」、および「第一に」「①…②…③…」
+- 話題の取り立て：「〜について（は）」「〜についてであるが」（例：「まず①多様な母語話者を対象に調査をしていることについてであるが、…」）
+- 振り返り：「上述の通り」「先述したとおり」「これまで述べてきたように」「ここまで概観した」
+- 条件・前提：「〜に当たり」「〜を踏まえ」「〜をもとに」「〜を考慮し」
+
+■ 3. 引用・先行研究への言及
+- 直接引用は「カギ括弧」＋（著者：年）を文中に編み込む形式。例：中間言語音声コーパスとは、「学習者の生成した音声データを組織的に大量に収集したもの」（前川：2009）であり、…
+- 複数著者は中黒で連結：（迫田・小西・佐々木・須賀・細井：2016）
+- 間接的言及：「〜で指摘されている」「〜と述べられている」「〜で明らかとなっている」
+- 補足参照：「（詳細は〜を参照されたい）」「〜を参考に筆者が作成」
+- 先行研究の網羅性への言及：「管見の限り存在しない」「〜について検討している研究は多数存在するが、…」
+- 英語文献は原文を引用ブロックで示し、直後に（和訳）を括弧書きで添える
+- 先行研究は「評価→限界の指摘」の型で扱う：「〜の課題を解決しながら構築されたコーパスであると評価できる。しかしながら、〜を想定してデザインされたものではないため、その点において、新たな〜を構築する余地があると考えられる。」
+
+■ 4. 論旨の流れ・構成
+- 章・節の冒頭で必ず予告する：「本章では〜について述べる」「本節では〜を概観した上で、〜について検討する」「本稿では〜をレビューするとともに、今後どのように発展していく可能性があるかを検討する」
+- 重要な用語は、先行研究の定義の直接引用によって導入する
+- 要素をまず列挙（①②③、あるいは「第一に…」）してから、「まず①…についてであるが」と一つずつ展開する
+- 議論は「先行研究の整理→個別事例の概観→課題・発展可能性の指摘→自らの提案→今後の課題」という順序で展開する
+- 結果の報告は「結果の提示→解釈→原因の考察→教育への示唆」の順に行う
+- 段落の末尾で小括し、「そこで、…」「以上の〜を踏まえ、…」で次の検討に接続する
+- 課題の提示：「今後検討しなければならない課題として、〜に触れる」「〜は今後明らかにしていくべき課題であるといえる」
+- 仮説の提示：「〜という仮説をたてることができる」「〜ではないかと考えることができる」
+
+■ 5. 分野の語彙（積極的に用いる）
+- 名詞：中間言語、音韻体系、習得過程、誤用／正用、産出／知覚、母語話者／学習者、母語干渉、（言語）転移、分節音、韻律、アクセント核、アクセント句、朗読音声／自発音声、調査協力者、調査対象（者）、調査項目、調査資料、タスク、プロトコル、アノテーション、転記、統制、母語話者評価、社会言語学的背景、言語背景、習熟度、JSL環境／JFL環境、レジスター、負担
+- 動詞：概観する、検討する、整理する、観察する、収録する、収集する、付与する、選定する、統制する、示唆する、捉える、明らかにする、特定する、対照する、網羅する
+- 副詞・修飾：網羅的に、体系的に、精緻に、多角的に、個別的に、非常に、大きく
+
+■ 6. 表記・文のリズム
+- 読点をやや多めに打ち、一文は長め。従属節を「〜ており、」「〜であり、」「〜とともに、」で連ねる
+- 形式名詞「もの」「こと」「点」による名詞化を多用する：「〜を可能とするものである」「〜していることが挙げられる」「〜という点で」
+- 統計結果は「t検定を行ったところ、〜の間に有意な差が見られた（t(28)=-2.00, p<.05）」のように、検定名＋「〜たところ」＋括弧内の統計量という形式で報告する
+- 表・図への言及：「表1は〜を示したものである」「以下の表1のようになる」「〜をまとめると以下の表1のようになる」
+
+【文体の見本（布村論文からの抜粋）】
+
+例1（定義の導入）：「中間言語音声コーパスとは、『学習者の生成した音声データを組織的に大量に収集したもの』（前川：2009）であり、『特定の言語の音韻体系や習得の過程を明らかにする目的で作られるもの』（Gut&Voormann:2014）である。つまり、その目的は、L1とL2を比較し、L2にのみ観察される特徴を誤用として特定しようとするものではなく、異なる言語背景を持つ学習者が特定の言語を習得しようとしたときに観察される習得過程を明らかにしようとするものである。」
+
+例2（課題の指摘と提案への接続）：「しかしながら、アノテーションの範囲をむやみに拡大することは、データを収集する研究者の負担を大きくするものであり、各コーパスの性質に応じて、必要となるアノテーションを適切に選定する必要がある。」
+
+例3（先行研究の評価と限界）：「会話分析、談話分析のアプローチで分析を行うためにこれまで構築されてきたコーパスの課題を解決しながら構築された学習者話し言葉コーパスであると評価できる。しかしながら、音声学・音韻論のアプローチで分析を行うことを想定してデザインされたコーパスではないため、その点において、新たなコーパスを構築する余地があると考えられる。」
+
+例4（理由の後置）：「朗読音声と自発音声に観察される特徴や得られる情報は異なった性質を持っており、同一の話者から両方のデータを通じた観察ができることが望ましいことを考えると、両方のデータを収集するコーパスが必要となる。」
+
+例5（結果からの仮説提示・修士論文より）：「拗音に関する誤りは、『母語話者よりも拗音モーラを普通モーラより長く発音してしまう』ことにより起きるものではないかと仮説をたてることができる。」
+
+例6（教育への示唆・修士論文より）：「手拍子を用いた拍の指導をする際には、学習者の『拍の長さ』だけでなく、『拍と拍の間隔』にも注意を払って指導を行うべきであると考えられる。」
+
+【変換のルール】
+1. 入力文章の内容（主張・論理・データ・数値・引用文献）は一切変更しない。新しい主張やデータを付け加えない。
+2. 文体・語彙・接続表現・文末表現のみを、上記プロファイルに従って書き換える。
+3. 入力が第二言語習得分野以外の用語を用いている場合、内容を損なわない範囲でSLA分野で慣用的な用語（例：「被験者」→「調査協力者」、「間違い」→「誤用」）に置き換える。
+4. 引用がある場合は（著者：年）形式に統一する。
+5. 断定的すぎる文末は緩叙的な文末（「〜と考えられる」等）に、口語的・軽い表現は学術的な表現に改める。
+6. 段落構成は入力のものを尊重するが、論旨の接続が不明瞭な箇所には布村スタイルの接続表現（「しかしながら」「その一方で」「以上のことから」等）を補う。
+7. 出力は変換後の本文のみとし、前置き・解説・箇条書きの注釈は付けない。`;
+
+// =====================================================================
+// UI
+// =====================================================================
+const $ = (id) => document.getElementById(id);
+
+$('styleGuideView').textContent = STYLE_GUIDE;
+
+// APIキーの保存・復元
+const KEY_STORAGE = 'nunomura_tool_api_key';
+$('apiKey').value = localStorage.getItem(KEY_STORAGE) || '';
+$('apiKey').addEventListener('change', () => {
+    localStorage.setItem(KEY_STORAGE, $('apiKey').value.trim());
+});
+$('clearKeyBtn').addEventListener('click', () => {
+    localStorage.removeItem(KEY_STORAGE);
+    $('apiKey').value = '';
+    $('status').textContent = 'APIキーを消去しました。';
+});
+
+function buildUserPrompt(text) {
+    return `以下の日本語論文の一部を、文体プロファイルに従って布村猛の文体に変換し、第二言語習得分野の論文として自然な文章を出力してください。\n\n【入力文章】\n${text}`;
+}
+
+// 方法A：プロンプトのコピー
+$('copyPromptBtn').addEventListener('click', async () => {
+    const text = $('inputText').value.trim();
+    if (!text) { alert('変換したい文章を入力してください。'); return; }
+    const fullPrompt = STYLE_GUIDE + '\n\n---\n\n' + buildUserPrompt(text);
+    await navigator.clipboard.writeText(fullPrompt);
+    $('copyPromptBtn').textContent = 'コピーしました！生成AIに貼り付けてください';
+    setTimeout(() => { $('copyPromptBtn').textContent = '変換用プロンプトをコピー'; }, 3000);
+});
+
+// 方法B：Claude APIで直接変換（ストリーミング）
+$('convertBtn').addEventListener('click', async () => {
+    const text = $('inputText').value.trim();
+    const apiKey = $('apiKey').value.trim();
+    if (!text) { alert('変換したい文章を入力してください。'); return; }
+    if (!apiKey) { alert('Anthropic APIキーを入力してください。'); return; }
+    localStorage.setItem(KEY_STORAGE, apiKey);
+
+    $('convertBtn').disabled = true;
+    $('status').textContent = '変換中…';
+    $('output').textContent = '';
+
+    try {
+        const response = await fetch('https://api.anthropic.com/v1/messages', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'x-api-key': apiKey,
+                'anthropic-version': '2023-06-01',
+                'anthropic-dangerous-direct-browser-access': 'true'
+            },
+            body: JSON.stringify({
+                model: 'claude-opus-4-8',
+                max_tokens: 16000,
+                stream: true,
+                thinking: { type: 'adaptive' },
+                system: STYLE_GUIDE,
+                messages: [{ role: 'user', content: buildUserPrompt(text) }]
+            })
+        });
+
+        if (!response.ok) {
+            const err = await response.json().catch(() => null);
+            throw new Error(err?.error?.message || `APIエラー（HTTP ${response.status}）`);
+        }
+
+        // SSEストリームを逐次処理して画面に表示する
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+        while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            buffer += decoder.decode(value, { stream: true });
+            const lines = buffer.split('\n');
+            buffer = lines.pop();
+            for (const line of lines) {
+                if (!line.startsWith('data: ')) continue;
+                let event;
+                try { event = JSON.parse(line.slice(6)); } catch { continue; }
+                if (event.type === 'content_block_delta' && event.delta?.type === 'text_delta') {
+                    $('output').textContent += event.delta.text;
+                } else if (event.type === 'error') {
+                    throw new Error(event.error?.message || 'ストリームエラー');
+                }
+            }
+        }
+        $('status').textContent = '変換が完了しました。';
+    } catch (e) {
+        $('status').textContent = 'エラー：' + e.message;
+    } finally {
+        $('convertBtn').disabled = false;
+    }
+});
+
+// 変換結果のコピー
+$('copyOutputBtn').addEventListener('click', async () => {
+    const out = $('output').textContent;
+    if (!out) { alert('変換結果がまだありません。'); return; }
+    await navigator.clipboard.writeText(out);
+    $('copyOutputBtn').textContent = 'コピーしました！';
+    setTimeout(() => { $('copyOutputBtn').textContent = '変換結果をコピー'; }, 3000);
+});
+    </script>
+</body>
+</html>
