@@ -1,0 +1,458 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="robots" content="noindex, nofollow">
+    <title>布村スタイル一括変換システム（論文一本・段落ごとの変換と検証）</title>
+    <script src="https://unpkg.com/mammoth@1.8.0/mammoth.browser.min.js"></script>
+    <script src="nunomura-style-profile.js"></script>
+    <style>
+        body {
+            font-family: 'Helvetica Neue', Arial, 'Hiragino Kaku Gothic ProN', 'Hiragino Sans', Meiryo, sans-serif;
+            line-height: 1.7;
+            color: #333;
+            max-width: 1100px;
+            margin: 20px auto;
+            padding: 0 15px;
+        }
+        h1, h2 { color: rgb(93, 43, 129); margin-top: 1.5em; margin-bottom: 0.8em; }
+        h1 {
+            text-align: center;
+            border-bottom: 2px solid rgb(93, 43, 129);
+            padding-bottom: 10px;
+            font-size: 1.5em;
+        }
+        h1 small { display: block; font-size: 0.6em; color: #555; margin-top: 5px; font-weight: normal; }
+        h2 { border-bottom: 1px solid #ccc; padding-bottom: 8px; font-size: 1.25em; }
+        textarea {
+            width: 100%; box-sizing: border-box; font-size: 0.95em; line-height: 1.7;
+            padding: 10px; border: 1px solid #ccc; border-radius: 5px; font-family: inherit;
+        }
+        #pasteText { min-height: 160px; }
+        button {
+            background-color: rgb(93, 43, 129); color: #fff; border: none; border-radius: 5px;
+            padding: 10px 18px; font-size: 1em; cursor: pointer; margin: 5px 8px 5px 0;
+        }
+        button:hover { background-color: rgb(120, 65, 160); }
+        button:disabled { background-color: #aaa; cursor: not-allowed; }
+        button.secondary { background-color: rgb(0, 115, 187); }
+        button.secondary:hover { background-color: rgb(40, 145, 210); }
+        button.small { padding: 4px 10px; font-size: 0.85em; margin: 2px; }
+        .panel { background-color: #f8f8f8; border: 1px solid #ddd; border-radius: 5px; padding: 15px; margin-bottom: 1em; }
+        .warn { background-color: #fff6e5; border-left: 5px solid #e6a700; padding: 8px 12px; font-size: 0.9em; margin: 1em 0; }
+        input[type="password"], select { padding: 8px; border: 1px solid #ccc; border-radius: 5px; box-sizing: border-box; }
+        input[type="password"] { width: 100%; }
+        table { border-collapse: collapse; width: 100%; font-size: 0.9em; margin-bottom: 1em; }
+        th, td { border: 1px solid #ddd; padding: 8px; vertical-align: top; }
+        th { background-color: rgb(93, 43, 129); color: #fff; font-weight: normal; }
+        td.original { width: 38%; color: #555; }
+        td.converted { width: 38%; }
+        td.converted [contenteditable] {
+            min-height: 2em; outline: none; border-radius: 3px; padding: 2px;
+        }
+        td.converted [contenteditable]:focus { background-color: #f3eefa; }
+        .status-pending { color: #888; }
+        .status-running { color: rgb(0, 115, 187); font-weight: bold; }
+        .status-ok { color: #1a7f37; font-weight: bold; }
+        .status-issue { color: #b35900; font-weight: bold; }
+        .status-error { color: #c00; font-weight: bold; }
+        .status-skip { color: #aaa; }
+        .issues { font-size: 0.85em; color: #b35900; margin-top: 4px; }
+        #progressWrap { background: #eee; border-radius: 5px; height: 22px; overflow: hidden; margin: 8px 0; }
+        #progressBar { background: rgb(93, 43, 129); height: 100%; width: 0; transition: width 0.3s; }
+        #progressText { font-size: 0.9em; color: #555; }
+        .note { font-size: 0.85em; color: #666; }
+        label { display: inline-block; margin: 4px 12px 4px 0; }
+        a { color: rgb(0, 115, 187); }
+    </style>
+</head>
+<body>
+    <h1>布村スタイル一括変換システム
+        <small>論文一本をアップロードし、段落ごとに「文体変換 → 内容検証 → 自動修正」を行った上で、人間が最終確認できるシステムです</small>
+    </h1>
+
+    <p>このシステムは以下のパイプラインで動作します。文体プロファイルは<a href="布村スタイル論文変換ツール.html">単発変換ツール</a>と共通です。</p>
+    <ol>
+        <li><strong>分割</strong>：アップロードされた論文を段落単位に分割します（見出し・参考文献は自動で変換対象外になります）</li>
+        <li><strong>変換</strong>：各段落を、前後の段落を文脈として参照しながら布村スタイルに変換します</li>
+        <li><strong>検証</strong>：別のモデルが原文と変換文を照合し、主張・数値・引用の改変がないかを確認します</li>
+        <li><strong>自動修正</strong>：問題が検出された段落は、指摘内容に基づいて一度だけ自動で修正・再検証されます</li>
+        <li><strong>最終確認</strong>：結果表で段落ごとに人間が確認・編集し、全文を書き出します</li>
+    </ol>
+
+    <h2>ステップ1：論文を読み込む</h2>
+    <div class="panel">
+        <p><input type="file" id="fileInput" accept=".docx,.txt"> <span class="note">（.docx または .txt。PDFは一度Wordかテキストに変換してからアップロードしてください）</span></p>
+        <p>またはテキストを直接貼り付け：</p>
+        <textarea id="pasteText" placeholder="ここに論文全文を貼り付けることもできます"></textarea>
+        <button id="splitBtn">段落に分割する</button>
+        <p id="splitInfo" class="note"></p>
+    </div>
+
+    <h2>ステップ2：変換対象の確認と設定</h2>
+    <div class="panel">
+        <div id="chunkListWrap" class="note">（先に論文を読み込んでください）</div>
+    </div>
+    <div class="panel">
+        <label for="apiKey">Anthropic APIキー</label>
+        <input type="password" id="apiKey" placeholder="sk-ant-...">
+        <div class="warn">APIキーはこのブラウザのlocalStorageにのみ保存されます。共用PCでは使用後に消去してください。</div>
+        <label>変換モデル：
+            <select id="modelSelect">
+                <option value="claude-opus-4-8" selected>Claude Opus 4.8（推奨）</option>
+                <option value="claude-sonnet-4-6">Claude Sonnet 4.6（低コスト）</option>
+            </select>
+        </label>
+        <label><input type="checkbox" id="verifyToggle" checked> 内容検証と自動修正を行う（検証はSonnet 4.6を使用）</label>
+        <br>
+        <button id="runBtn" disabled>変換を開始する</button>
+        <button id="stopBtn" class="secondary" disabled>停止</button>
+        <button id="clearKeyBtn" class="secondary">キーを消去</button>
+        <div id="progressWrap"><div id="progressBar"></div></div>
+        <p id="progressText"></p>
+    </div>
+
+    <h2>ステップ3：結果の確認と編集</h2>
+    <p class="note">「変換後」の欄は直接クリックして編集できます。検証で問題が指摘された段落（⚠）は指摘内容を確認してください。</p>
+    <table id="resultTable" style="display:none">
+        <thead><tr><th style="width:3em">#</th><th>原文</th><th>変換後（クリックで編集可）</th><th style="width:9em">状態</th></tr></thead>
+        <tbody id="resultBody"></tbody>
+    </table>
+
+    <h2>ステップ4：全文の書き出し</h2>
+    <div class="panel">
+        <button id="copyAllBtn">変換後の全文をコピー</button>
+        <button id="downloadBtn" class="secondary">テキストファイルとしてダウンロード</button>
+        <p class="note">変換対象外の段落（見出し・参考文献など）は原文のまま出力されます。</p>
+    </div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const KEY_STORAGE = 'nunomura_tool_api_key';
+const VERIFY_MODEL = 'claude-sonnet-4-6';
+
+$('apiKey').value = localStorage.getItem(KEY_STORAGE) || '';
+$('apiKey').addEventListener('change', () => localStorage.setItem(KEY_STORAGE, $('apiKey').value.trim()));
+$('clearKeyBtn').addEventListener('click', () => {
+    localStorage.removeItem(KEY_STORAGE);
+    $('apiKey').value = '';
+});
+
+// ---------------------------------------------------------------
+// 状態
+// ---------------------------------------------------------------
+let chunks = [];      // {id, original, convert, status, converted, issues}
+let stopRequested = false;
+
+// ---------------------------------------------------------------
+// ステップ1：読み込みと段落分割
+// ---------------------------------------------------------------
+$('fileInput').addEventListener('change', async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    try {
+        if (file.name.endsWith('.docx')) {
+            const buf = await file.arrayBuffer();
+            const result = await mammoth.extractRawText({ arrayBuffer: buf });
+            $('pasteText').value = result.value;
+        } else {
+            $('pasteText').value = await file.text();
+        }
+        $('splitInfo').textContent = `「${file.name}」を読み込みました。「段落に分割する」を押してください。`;
+    } catch (err) {
+        $('splitInfo').textContent = '読み込みエラー：' + err.message;
+    }
+});
+
+// 見出しらしい行の判定：句点を含まず短い行
+function isHeading(t) {
+    return !/[。．]/.test(t) && t.length <= 50;
+}
+
+$('splitBtn').addEventListener('click', () => {
+    const text = $('pasteText').value.trim();
+    if (!text) { alert('論文を読み込むか、貼り付けてください。'); return; }
+
+    const paras = text.split(/\n+/).map(s => s.trim()).filter(s => s.length > 0);
+    let inBackMatter = false; // 参考文献・謝辞以降は変換しない
+    chunks = paras.map((p, i) => {
+        if (/^(参考文献|引用文献|謝辞|付録|資料)/.test(p)) inBackMatter = true;
+        const heading = isHeading(p);
+        return {
+            id: i,
+            original: p,
+            convert: !heading && !inBackMatter,
+            status: 'pending',
+            converted: '',
+            issues: []
+        };
+    });
+    renderChunkList();
+    renderResults();
+    const n = chunks.filter(c => c.convert).length;
+    $('splitInfo').textContent = `全${chunks.length}段落に分割しました（うち変換対象 ${n} 段落）。ステップ2で対象を確認してください。`;
+    $('runBtn').disabled = false;
+});
+
+function renderChunkList() {
+    const wrap = $('chunkListWrap');
+    if (chunks.length === 0) { wrap.textContent = '（先に論文を読み込んでください）'; return; }
+    wrap.innerHTML = '';
+    const tbl = document.createElement('table');
+    tbl.innerHTML = '<thead><tr><th style="width:3em">#</th><th style="width:6em">変換する</th><th>段落（冒頭部分）</th></tr></thead>';
+    const tb = document.createElement('tbody');
+    chunks.forEach(c => {
+        const tr = document.createElement('tr');
+        const preview = c.original.length > 80 ? c.original.slice(0, 80) + '…' : c.original;
+        tr.innerHTML = `<td>${c.id + 1}</td>
+            <td style="text-align:center"><input type="checkbox" data-id="${c.id}" ${c.convert ? 'checked' : ''}></td>
+            <td>${escapeHtml(preview)}</td>`;
+        tb.appendChild(tr);
+    });
+    tbl.appendChild(tb);
+    wrap.appendChild(tbl);
+    wrap.querySelectorAll('input[type=checkbox]').forEach(cb => {
+        cb.addEventListener('change', () => {
+            chunks[Number(cb.dataset.id)].convert = cb.checked;
+        });
+    });
+}
+
+function escapeHtml(s) {
+    return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+// ---------------------------------------------------------------
+// Claude API呼び出し（リトライ・プロンプトキャッシュ付き）
+// ---------------------------------------------------------------
+async function callClaude({ model, system, user, maxTokens, jsonSchema }) {
+    const body = {
+        model,
+        max_tokens: maxTokens,
+        thinking: { type: 'adaptive' },
+        system: [{ type: 'text', text: system, cache_control: { type: 'ephemeral' } }],
+        messages: [{ role: 'user', content: user }]
+    };
+    if (jsonSchema) {
+        body.output_config = { format: { type: 'json_schema', schema: jsonSchema } };
+    }
+    for (let attempt = 0; attempt < 4; attempt++) {
+        const res = await fetch('https://api.anthropic.com/v1/messages', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'x-api-key': $('apiKey').value.trim(),
+                'anthropic-version': '2023-06-01',
+                'anthropic-dangerous-direct-browser-access': 'true'
+            },
+            body: JSON.stringify(body)
+        });
+        if (res.ok) {
+            const data = await res.json();
+            const textBlock = data.content.find(b => b.type === 'text');
+            return textBlock ? textBlock.text : '';
+        }
+        if (res.status === 429 || res.status >= 500) {
+            const retryAfter = Number(res.headers.get('retry-after')) || (2 ** attempt) * 2;
+            await new Promise(r => setTimeout(r, retryAfter * 1000));
+            continue;
+        }
+        const err = await res.json().catch(() => null);
+        throw new Error(err?.error?.message || `APIエラー（HTTP ${res.status}）`);
+    }
+    throw new Error('リトライ上限に達しました。時間をおいて再実行してください。');
+}
+
+// ---------------------------------------------------------------
+// パイプライン：変換 → 検証 → 自動修正 → 再検証
+// ---------------------------------------------------------------
+function contextOf(chunk) {
+    const prev = chunks[chunk.id - 1];
+    const next = chunks[chunk.id + 1];
+    let ctx = '';
+    if (prev) ctx += `【直前の段落（文脈参照用・変換不要）】\n${prev.original}\n\n`;
+    if (next) ctx += `【直後の段落（文脈参照用・変換不要）】\n${next.original}\n\n`;
+    return ctx;
+}
+
+async function convertChunk(chunk, model) {
+    const user = `${contextOf(chunk)}【変換対象の段落】\n${chunk.original}\n\n上記の【変換対象の段落】のみを文体プロファイルに従って布村猛の文体に変換し、変換後の本文のみを出力してください。前後の段落は文脈の参考であり、出力に含めないでください。`;
+    return (await callClaude({ model, system: window.STYLE_GUIDE, user, maxTokens: 4000 })).trim();
+}
+
+const VERIFY_SYSTEM = `あなたは学術論文の校閲者である。「原文」と「変換文」を照合し、文体の変更を除いて内容が保存されているかを検証すること。以下の観点で問題のみを報告する。
+1. 主張・論理の追加、欠落、改変
+2. 数値・統計量・固有名詞の変更
+3. 引用文献（著者名・年）の変更や欠落
+4. 専門用語の置き換えによる意味の変化
+文体・語彙・文末表現・接続詞の変更は問題としない。問題がなければ ok を true、issues を空配列とする。`;
+
+const VERIFY_SCHEMA = {
+    type: 'object',
+    properties: {
+        ok: { type: 'boolean' },
+        issues: { type: 'array', items: { type: 'string' } }
+    },
+    required: ['ok', 'issues'],
+    additionalProperties: false
+};
+
+async function verifyChunk(original, converted) {
+    const user = `【原文】\n${original}\n\n【変換文】\n${converted}`;
+    const raw = await callClaude({
+        model: VERIFY_MODEL, system: VERIFY_SYSTEM, user,
+        maxTokens: 1500, jsonSchema: VERIFY_SCHEMA
+    });
+    try { return JSON.parse(raw); } catch { return { ok: true, issues: [] }; }
+}
+
+async function reviseChunk(chunk, converted, issues, model) {
+    const user = `以下の【変換文】には、原文との照合で次の問題が指摘されました。文体プロファイルを維持したまま、指摘された問題のみを修正した本文を出力してください。\n\n【指摘事項】\n${issues.map(s => '・' + s).join('\n')}\n\n【原文】\n${chunk.original}\n\n【変換文】\n${converted}`;
+    return (await callClaude({ model, system: window.STYLE_GUIDE, user, maxTokens: 4000 })).trim();
+}
+
+async function processChunk(chunk, model, doVerify) {
+    chunk.status = 'running';
+    renderRow(chunk);
+    try {
+        let converted = await convertChunk(chunk, model);
+        if (doVerify) {
+            let v = await verifyChunk(chunk.original, converted);
+            if (!v.ok && v.issues.length > 0) {
+                converted = await reviseChunk(chunk, converted, v.issues, model);
+                v = await verifyChunk(chunk.original, converted);
+            }
+            chunk.issues = v.ok ? [] : v.issues;
+        } else {
+            chunk.issues = [];
+        }
+        chunk.converted = converted;
+        chunk.status = chunk.issues.length > 0 ? 'issue' : 'ok';
+    } catch (e) {
+        chunk.status = 'error';
+        chunk.issues = [e.message];
+    }
+    renderRow(chunk);
+    updateProgress();
+}
+
+// 並列数3のワーカープールで順に処理する
+async function runAll() {
+    const model = $('modelSelect').value;
+    const doVerify = $('verifyToggle').checked;
+    const targets = chunks.filter(c => c.convert && (c.status === 'pending' || c.status === 'error'));
+    if (targets.length === 0) { alert('処理対象の段落がありません。'); return; }
+    if (!$('apiKey').value.trim()) { alert('APIキーを入力してください。'); return; }
+    localStorage.setItem(KEY_STORAGE, $('apiKey').value.trim());
+
+    stopRequested = false;
+    $('runBtn').disabled = true;
+    $('stopBtn').disabled = false;
+    $('resultTable').style.display = '';
+
+    let index = 0;
+    const worker = async () => {
+        while (index < targets.length && !stopRequested) {
+            const chunk = targets[index++];
+            await processChunk(chunk, model, doVerify);
+        }
+    };
+    await Promise.all([worker(), worker(), worker()]);
+
+    $('runBtn').disabled = false;
+    $('stopBtn').disabled = true;
+    const remaining = chunks.filter(c => c.convert && c.status === 'pending').length;
+    $('progressText').textContent = stopRequested
+        ? `停止しました（未処理 ${remaining} 段落。「変換を開始する」で再開できます）`
+        : '全段落の処理が完了しました。ステップ3で確認してください。';
+}
+
+$('runBtn').addEventListener('click', runAll);
+$('stopBtn').addEventListener('click', () => { stopRequested = true; });
+
+function updateProgress() {
+    const targets = chunks.filter(c => c.convert);
+    const done = targets.filter(c => ['ok', 'issue', 'error'].includes(c.status)).length;
+    const pct = targets.length ? Math.round(done / targets.length * 100) : 0;
+    $('progressBar').style.width = pct + '%';
+    $('progressText').textContent = `処理状況：${done} / ${targets.length} 段落（${pct}%）`;
+}
+
+// ---------------------------------------------------------------
+// ステップ3：結果テーブル
+// ---------------------------------------------------------------
+function renderResults() {
+    const tb = $('resultBody');
+    tb.innerHTML = '';
+    chunks.forEach(c => {
+        const tr = document.createElement('tr');
+        tr.id = 'row-' + c.id;
+        tb.appendChild(tr);
+        renderRow(c);
+    });
+    $('resultTable').style.display = chunks.length ? '' : 'none';
+}
+
+const STATUS_LABEL = {
+    pending: ['未処理', 'status-pending'],
+    running: ['処理中…', 'status-running'],
+    ok: ['✓ 検証OK', 'status-ok'],
+    issue: ['⚠ 要確認', 'status-issue'],
+    error: ['✗ エラー', 'status-error']
+};
+
+function renderRow(c) {
+    const tr = document.getElementById('row-' + c.id);
+    if (!tr) return;
+    if (!c.convert) {
+        tr.innerHTML = `<td>${c.id + 1}</td>
+            <td class="original">${escapeHtml(c.original)}</td>
+            <td class="converted status-skip">（変換対象外：原文のまま出力）</td>
+            <td class="status-skip">対象外</td>`;
+        return;
+    }
+    const [label, cls] = STATUS_LABEL[c.status] || STATUS_LABEL.pending;
+    const issuesHtml = c.issues.length
+        ? `<div class="issues">${c.issues.map(s => '・' + escapeHtml(s)).join('<br>')}</div>` : '';
+    tr.innerHTML = `<td>${c.id + 1}</td>
+        <td class="original">${escapeHtml(c.original)}</td>
+        <td class="converted"><div contenteditable="true" data-id="${c.id}">${escapeHtml(c.converted)}</div>${issuesHtml}</td>
+        <td><span class="${cls}">${label}</span><br>
+            <button class="small secondary" data-rerun="${c.id}">再変換</button></td>`;
+    tr.querySelector('[contenteditable]').addEventListener('input', (e) => {
+        c.converted = e.target.innerText;
+    });
+    tr.querySelector('[data-rerun]').addEventListener('click', async (e) => {
+        e.target.disabled = true;
+        c.status = 'pending';
+        await processChunk(c, $('modelSelect').value, $('verifyToggle').checked);
+    });
+}
+
+// ---------------------------------------------------------------
+// ステップ4：書き出し
+// ---------------------------------------------------------------
+function assembleText() {
+    return chunks.map(c => (c.convert && c.converted) ? c.converted : c.original).join('\n\n');
+}
+
+$('copyAllBtn').addEventListener('click', async () => {
+    if (chunks.length === 0) { alert('まだ結果がありません。'); return; }
+    await navigator.clipboard.writeText(assembleText());
+    $('copyAllBtn').textContent = 'コピーしました！';
+    setTimeout(() => { $('copyAllBtn').textContent = '変換後の全文をコピー'; }, 3000);
+});
+
+$('downloadBtn').addEventListener('click', () => {
+    if (chunks.length === 0) { alert('まだ結果がありません。'); return; }
+    const blob = new Blob([assembleText()], { type: 'text/plain;charset=utf-8' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = '布村スタイル変換結果.txt';
+    a.click();
+    URL.revokeObjectURL(a.href);
+});
+</script>
+</body>
+</html>
