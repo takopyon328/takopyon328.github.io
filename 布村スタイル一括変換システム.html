@@ -64,6 +64,7 @@
         #progressText { font-size: 0.9em; color: #555; }
         .note { font-size: 0.85em; color: #666; }
         label { display: inline-block; margin: 4px 12px 4px 0; }
+        details summary { cursor: pointer; color: rgb(93, 43, 129); font-weight: bold; margin: 0.5em 0; }
         a { color: rgb(0, 115, 187); }
     </style>
 </head>
@@ -75,7 +76,8 @@
     <p>このシステムは以下のパイプラインで動作します。文体プロファイルは<a href="布村スタイル論文変換ツール.html">単発変換ツール</a>と共通です。</p>
     <ol>
         <li><strong>分割</strong>：アップロードされた論文を段落単位に分割します（見出し・参考文献は自動で変換対象外になります）</li>
-        <li><strong>変換</strong>：各段落を、前後の段落を文脈として参照しながら布村スタイルに変換します</li>
+        <li><strong>全体文脈の抽出</strong>：論文全体から用語統一表と章構成の要約を1回だけ抽出し、すべての段落の変換で共通参照します（章をまたぐ用語・表現の統一のため）</li>
+        <li><strong>変換</strong>：各段落を、全体文脈と前後の段落を参照しながら布村スタイルに変換します</li>
         <li><strong>検証</strong>：別のモデルが原文と変換文を照合し、主張・数値・引用の改変がないかを確認します</li>
         <li><strong>自動修正</strong>：問題が検出された段落は、指摘内容に基づいて一度だけ自動で修正・再検証されます</li>
         <li><strong>最終確認</strong>：結果表で段落ごとに人間が確認・編集し、全文を書き出します</li>
@@ -105,6 +107,14 @@
             </select>
         </label>
         <label><input type="checkbox" id="verifyToggle" checked> 内容検証と自動修正を行う（検証はSonnet 4.6を使用）</label>
+        <br>
+        <label><input type="checkbox" id="globalToggle" checked> 全体文脈パスを使用する（章をまたぐ用語・表現の統一。抽出はSonnet 4.6を使用）</label>
+        <details id="globalDetails">
+            <summary>抽出された全体文脈（用語統一表・構成要約）を確認・編集する</summary>
+            <p class="note">変換開始時に自動で抽出されますが、開始前にここを直接編集して用語の統一方針を指定することもできます。</p>
+            <textarea id="globalContext" style="min-height:120px" placeholder="（変換開始時に自動で抽出されます）"></textarea>
+            <button id="reextractBtn" class="secondary small">全体文脈を再抽出する</button>
+        </details>
         <br>
         <button id="runBtn" disabled>変換を開始する</button>
         <button id="stopBtn" class="secondary" disabled>停止</button>
@@ -190,6 +200,7 @@ $('splitBtn').addEventListener('click', () => {
     });
     renderChunkList();
     renderResults();
+    $('globalContext').value = ''; // 新しい論文なので全体文脈をリセット
     const n = chunks.filter(c => c.convert).length;
     $('splitInfo').textContent = `全${chunks.length}段落に分割しました（うち変換対象 ${n} 段落）。ステップ2で対象を確認してください。`;
     $('runBtn').disabled = false;
@@ -227,11 +238,17 @@ function escapeHtml(s) {
 // Claude API呼び出し（リトライ・プロンプトキャッシュ付き）
 // ---------------------------------------------------------------
 async function callClaude({ model, system, user, maxTokens, jsonSchema }) {
+    // system は文字列または文字列の配列。最後のブロックにキャッシュ指定を
+    // 置くことで、文体プロファイル＋全体文脈の全体を全段落で再利用する。
+    const systemBlocks = (Array.isArray(system) ? system : [system])
+        .filter(s => s && s.trim().length > 0)
+        .map(s => ({ type: 'text', text: s }));
+    systemBlocks[systemBlocks.length - 1].cache_control = { type: 'ephemeral' };
     const body = {
         model,
         max_tokens: maxTokens,
         thinking: { type: 'adaptive' },
-        system: [{ type: 'text', text: system, cache_control: { type: 'ephemeral' } }],
+        system: systemBlocks,
         messages: [{ role: 'user', content: user }]
     };
     if (jsonSchema) {
@@ -265,6 +282,50 @@ async function callClaude({ model, system, user, maxTokens, jsonSchema }) {
 }
 
 // ---------------------------------------------------------------
+// 全体文脈パス：論文全体から用語統一表と構成要約を1回だけ抽出し、
+// すべての段落の変換でシステムプロンプトとして共通参照する
+// ---------------------------------------------------------------
+const EXTRACT_SYSTEM = `あなたは学術論文の編集者である。与えられた論文全体を読み、後続の文体変換作業ですべての段落が共通して参照するための「全体文脈」を作成すること。以下の3点を簡潔な箇条書きで出力する。
+1. 用語統一表：論文中の主要な専門用語と、第二言語習得分野の論文として用いるべき統一表記（例：被験者→調査協力者）。論文中で表記が揺れている語は必ず挙げる。
+2. 構成の要約：各章・節の主旨を1行ずつ。
+3. 論文全体の主張：研究目的と結論を3行以内で。
+出力は本文のみとし、全体で1500字以内に収めること。`;
+
+async function extractGlobalContext() {
+    const full = chunks.map(c => c.original).join('\n');
+    $('progressText').textContent = '全体文脈（用語統一表・構成要約）を抽出中…';
+    const out = await callClaude({
+        model: VERIFY_MODEL, system: EXTRACT_SYSTEM, user: full, maxTokens: 3000
+    });
+    $('globalContext').value = out.trim();
+    $('globalDetails').open = true;
+}
+
+$('reextractBtn').addEventListener('click', async (e) => {
+    if (chunks.length === 0) { alert('先に論文を読み込んで段落に分割してください。'); return; }
+    if (!$('apiKey').value.trim()) { alert('APIキーを入力してください。'); return; }
+    e.target.disabled = true;
+    try {
+        await extractGlobalContext();
+        $('progressText').textContent = '全体文脈を抽出しました。内容を確認・編集してから変換を開始できます。';
+    } catch (err) {
+        $('progressText').textContent = '全体文脈の抽出に失敗しました：' + err.message;
+    } finally {
+        e.target.disabled = false;
+    }
+});
+
+// 変換・修正呼び出しのシステムプロンプト（文体プロファイル＋全体文脈）
+function styleSystem() {
+    const g = $('globalToggle').checked ? $('globalContext').value.trim() : '';
+    if (!g) return [window.STYLE_GUIDE];
+    return [
+        window.STYLE_GUIDE,
+        `【論文全体の文脈（全段落共通の参照情報）】\n以下は変換対象の論文全体から抽出した用語統一表と構成の要約である。段落の変換に当たり、用語・表記はこの表に従って論文全体で統一すること。\n\n${g}`
+    ];
+}
+
+// ---------------------------------------------------------------
 // パイプライン：変換 → 検証 → 自動修正 → 再検証
 // ---------------------------------------------------------------
 function contextOf(chunk) {
@@ -278,7 +339,7 @@ function contextOf(chunk) {
 
 async function convertChunk(chunk, model) {
     const user = `${contextOf(chunk)}【変換対象の段落】\n${chunk.original}\n\n上記の【変換対象の段落】のみを文体プロファイルに従って布村猛の文体に変換し、変換後の本文のみを出力してください。前後の段落は文脈の参考であり、出力に含めないでください。`;
-    return (await callClaude({ model, system: window.STYLE_GUIDE, user, maxTokens: 4000 })).trim();
+    return (await callClaude({ model, system: styleSystem(), user, maxTokens: 4000 })).trim();
 }
 
 const VERIFY_SYSTEM = `あなたは学術論文の校閲者である。「原文」と「変換文」を照合し、文体の変更を除いて内容が保存されているかを検証すること。以下の観点で問題のみを報告する。
@@ -309,7 +370,7 @@ async function verifyChunk(original, converted) {
 
 async function reviseChunk(chunk, converted, issues, model) {
     const user = `以下の【変換文】には、原文との照合で次の問題が指摘されました。文体プロファイルを維持したまま、指摘された問題のみを修正した本文を出力してください。\n\n【指摘事項】\n${issues.map(s => '・' + s).join('\n')}\n\n【原文】\n${chunk.original}\n\n【変換文】\n${converted}`;
-    return (await callClaude({ model, system: window.STYLE_GUIDE, user, maxTokens: 4000 })).trim();
+    return (await callClaude({ model, system: styleSystem(), user, maxTokens: 4000 })).trim();
 }
 
 async function processChunk(chunk, model, doVerify) {
@@ -350,6 +411,18 @@ async function runAll() {
     $('runBtn').disabled = true;
     $('stopBtn').disabled = false;
     $('resultTable').style.display = '';
+
+    // 全体文脈パス：未抽出であれば変換開始前に1回だけ抽出する
+    if ($('globalToggle').checked && !$('globalContext').value.trim()) {
+        try {
+            await extractGlobalContext();
+        } catch (e) {
+            $('progressText').textContent = '全体文脈の抽出に失敗したため中断しました：' + e.message;
+            $('runBtn').disabled = false;
+            $('stopBtn').disabled = true;
+            return;
+        }
+    }
 
     let index = 0;
     const worker = async () => {
