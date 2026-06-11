@@ -1,0 +1,78 @@
+"""偽 mfa コマンドを使った CLI の end-to-end テスト。"""
+
+import os
+import shutil
+import stat
+import sys
+from pathlib import Path
+
+import numpy as np
+import pandas as pd
+import soundfile as sf
+import pytest
+
+from pitchan.cli import main
+
+TEXT = "私は山梨大学で、音声を研究しています。"
+
+
+@pytest.fixture
+def fake_mfa_on_path(tmp_path, monkeypatch):
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    src = Path(__file__).parent / "fake_mfa.py"
+    dst = bin_dir / "mfa"
+    dst.write_text(
+        f"#!{sys.executable}\n" + src.read_text(encoding="utf-8").split("\n", 1)[1],
+        encoding="utf-8",
+    )
+    dst.chmod(dst.stat().st_mode | stat.S_IEXEC)
+    monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ['PATH']}")
+
+
+def _make_wav(path: Path, duration: float, f0_hz: float = 150.0, sr: int = 16000):
+    x = np.zeros(int(sr * duration))
+    period = int(sr / f0_hz)
+    x[::period] = 0.5
+    sf.write(path, x, sr)
+
+
+def test_e2e_batch(tmp_path, fake_mfa_on_path):
+    from pitchan.textproc import analyze_text
+
+    aps = analyze_text(TEXT)
+    n_words = sum(len(ap.words) for ap in aps)
+
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    _make_wav(data_dir / "sample.wav", duration=0.5 + n_words * 0.3 + 0.5)
+    (data_dir / "sample.txt").write_text(TEXT, encoding="utf-8")
+
+    out_dir = tmp_path / "out"
+    rc = main(
+        ["batch", "--dir", str(data_dir), "--out", str(out_dir), "--jobs", "1"]
+    )
+    assert rc == 0
+
+    summary = pd.read_csv(out_dir / "sample_ap_summary.csv")
+    assert len(summary) == len(aps)
+    # 全フレームが 150 Hz なので半音値はほぼ 0(基準 = 幾何平均)
+    assert summary["f0_mean_st"].abs().max() < 1.0
+
+    frames = pd.read_csv(out_dir / "sample_frames.csv")
+    assert (frames["f0_hz"] > 0).any()
+    contours = pd.read_csv(out_dir / "sample_ap_contours.csv")
+    assert len(contours) == len(aps)
+    assert (out_dir / "sample.json").exists()
+    assert (out_dir / "sample.TextGrid").exists()
+
+
+def test_e2e_missing_mfa(tmp_path, monkeypatch):
+    if shutil.which("mfa"):
+        pytest.skip("実物の mfa が存在する環境ではスキップ")
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    _make_wav(data_dir / "a.wav", 2.0)
+    (data_dir / "a.txt").write_text(TEXT, encoding="utf-8")
+    rc = main(["batch", "--dir", str(data_dir), "--out", str(tmp_path / "o")])
+    assert rc == 1  # mfa 不在の明確なエラーで終了

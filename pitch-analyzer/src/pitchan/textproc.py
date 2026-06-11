@@ -1,0 +1,173 @@
+"""テキストからアクセント句構造を推定する(pyopenjtalk ベース)。
+
+NJD(run_frontend)の chain_flag で単語をアクセント句にまとめ、
+アクセント型・モーラ数はフルコンテキストラベルの F: フィールドから取る。
+単語の acc 値は連結後のアクセント句のアクセント型と一致しないため使わない。
+"""
+
+from __future__ import annotations
+
+import logging
+import re
+import unicodedata
+from dataclasses import dataclass, field
+
+import pyopenjtalk
+
+logger = logging.getLogger(__name__)
+
+_SMALL_KANA = set("ァィゥェォャュョヮ")
+# NJD の発音に含まれる無声化マーク・記号類(カタカナと長音以外は除去)
+_KATAKANA_RE = re.compile(r"[ァ-ヴー]+")
+
+
+@dataclass
+class Word:
+    surface: str
+    pron: str  # カタカナ読み(無声化マーク等を除去済み、ヲ→オ正規化済み)
+    mora_count: int
+    pos: str
+    t_start: float | None = None
+    t_end: float | None = None
+
+
+@dataclass
+class AccentPhrase:
+    index: int
+    words: list[Word] = field(default_factory=list)
+    accent_type: int | None = None
+    mora_count: int = 0
+    follows_pause: bool = False  # 直前がポーズまたは文頭
+    t_start: float | None = None
+    t_end: float | None = None
+    low_confidence: bool = False
+
+    @property
+    def surface(self) -> str:
+        return "".join(w.surface for w in self.words)
+
+    @property
+    def kana(self) -> str:
+        return "".join(w.pron for w in self.words)
+
+    @property
+    def duration(self) -> float | None:
+        if self.t_start is None or self.t_end is None:
+            return None
+        return self.t_end - self.t_start
+
+
+def split_moras(kana: str) -> list[str]:
+    """カタカナ文字列をモーラに分割する。拗音・小書き文字は前のモーラに付ける。"""
+    moras: list[str] = []
+    for ch in kana:
+        if ch in _SMALL_KANA and moras:
+            moras[-1] += ch
+        else:
+            moras.append(ch)
+    return moras
+
+
+def clean_pron(pron: str) -> str:
+    """NJD の発音から無声化マーク等を除去し、カタカナと長音のみ残す。"""
+    pron = pron.replace("ヲ", "オ")
+    return "".join(_KATAKANA_RE.findall(pron))
+
+
+def _ap_info_from_labels(text: str) -> list[tuple[int, int, bool]]:
+    """フルコンテキストラベルから AP ごとの (モーラ数, アクセント型, ポーズ直後) を得る。
+
+    F: フィールドは AP 内で一定かつ位置情報を含むため AP の同一性判定キーに使える。
+    """
+    infos: list[tuple[int, int, bool]] = []
+    prev_key: str | None = None
+    after_pause = True
+    for lb in pyopenjtalk.extract_fullcontext(text):
+        ph = re.search(r"\-(.+?)\+", lb).group(1)
+        if ph in ("sil", "pau"):
+            after_pause = True
+            prev_key = None
+            continue
+        m = re.search(r"/F:(\d+)_(\d+)#[^/]*", lb)
+        if m is None:
+            continue
+        key = m.group(0)
+        if key != prev_key:
+            infos.append((int(m.group(1)), int(m.group(2)), after_pause))
+            prev_key = key
+            after_pause = False
+    return infos
+
+
+def analyze_text(text: str) -> list[AccentPhrase]:
+    """テキストをアクセント句のリストに変換する。"""
+    text = unicodedata.normalize("NFKC", text).strip()
+    if not text:
+        return []
+
+    feats = pyopenjtalk.run_frontend(text)
+
+    aps: list[AccentPhrase] = []
+    after_pause = True
+    for f in feats:
+        if f["mora_size"] == 0 or f["pos"] == "記号":
+            after_pause = True
+            continue
+        pron = clean_pron(f["pron"])
+        if not pron:
+            logger.warning("読みが空の語をスキップ: %r", f["string"])
+            after_pause = True
+            continue
+        word = Word(
+            surface=f["string"],
+            pron=pron,
+            mora_count=f["mora_size"],
+            pos=f["pos"],
+        )
+        if f["chain_flag"] == 1 and aps and not after_pause:
+            aps[-1].words.append(word)
+        else:
+            aps.append(
+                AccentPhrase(index=len(aps), words=[word], follows_pause=after_pause)
+            )
+            after_pause = False
+
+    for ap in aps:
+        ap.mora_count = sum(w.mora_count for w in ap.words)
+
+    # フルコンテキストラベルからアクセント型を補完(AP 数が一致する場合のみ)
+    try:
+        infos = _ap_info_from_labels(text)
+    except Exception:
+        logger.exception("フルコンテキストラベルの解析に失敗。アクセント型は未設定になります")
+        infos = []
+    if len(infos) == len(aps):
+        for ap, (mora_count, accent_type, _) in zip(aps, infos):
+            ap.accent_type = accent_type
+            if mora_count != ap.mora_count:
+                logger.warning(
+                    "AP %d (%s): モーラ数不一致 NJD=%d labels=%d",
+                    ap.index, ap.kana, ap.mora_count, mora_count,
+                )
+    else:
+        logger.warning(
+            "AP 数が不一致 (NJD=%d, labels=%d)。アクセント型は未設定になります",
+            len(aps), len(infos),
+        )
+    return aps
+
+
+def analyze_text_file(path: str) -> list[AccentPhrase]:
+    """テキストファイル全体を解析する。改行・空行はポーズとして扱われる。"""
+    with open(path, encoding="utf-8") as fh:
+        lines = [ln.strip() for ln in fh]
+    aps: list[AccentPhrase] = []
+    for line in lines:
+        if not line:
+            continue
+        for ap in analyze_text(line):
+            ap.index = len(aps)
+            if not aps:
+                ap.follows_pause = True
+            aps.append(ap)
+    return aps

@@ -1,0 +1,111 @@
+# pitchan — 日本語朗読音声のアクセント句単位ピッチ分析
+
+朗読音声(WAV)と朗読テキストから、アクセント句ごとに分割した正規化 F0 を出力する
+コマンドラインツールです。設計の詳細は [SPEC.md](SPEC.md) を参照してください。
+
+## インストール
+
+Montreal Forced Aligner(MFA)を使うため conda 環境を推奨します。
+
+```bash
+# 1. conda 環境の作成と MFA の導入
+conda create -n pitchan python=3.11 -y
+conda activate pitchan
+conda install -c conda-forge montreal-forced-aligner -y
+
+# 2. MFA の日本語モデルをダウンロード(初回のみ)
+mfa model download acoustic japanese_mfa
+mfa model download g2p japanese_mfa
+
+# 3. 本パッケージのインストール(このディレクトリで)
+pip install -e ".[plot]"
+```
+
+## 使い方
+
+### 一括処理(推奨)
+
+同名の `.wav` / `.txt` ペアを 1 つのディレクトリに置きます:
+
+```
+data/
+  chapter01.wav
+  chapter01.txt
+  chapter02.wav
+  chapter02.txt
+  ...
+```
+
+```bash
+pitchan batch --dir data/ --out results/ --plot --bom
+```
+
+- 既定では**ディレクトリ全体を 1 話者**として扱い、半音変換の基準
+  (有声フレームの幾何平均)を全ファイルから計算します(`--ref speaker`)。
+- 複数話者を扱う場合は `data/<話者ID>/xxx.wav` のように話者別サブディレクトリに
+  分けてください。正規化は話者ごとに行われます。
+
+### 単一ファイル
+
+```bash
+pitchan analyze --wav recording.wav --text script.txt --out results/
+```
+
+### 主なオプション
+
+| オプション | 既定 | 説明 |
+|-----------|------|------|
+| `--f0-floor` / `--f0-ceil` | 60 / 500 | F0 探索範囲 [Hz]。男性話者なら `--f0-ceil 350` 程度に下げると倍ピッチ誤りが減ります |
+| `--frame-shift` | 5 | フレームシフト [ms] |
+| `--ref` | speaker | 半音変換の基準: `speaker` / `file` / `value:<Hz>` |
+| `--norm-points` | 30 | 時間正規化輪郭の点数 |
+| `--interpolate` | off | アクセント句内の無声区間を線形補間 |
+| `--median-filter` | off | F0 の 5 点メディアンフィルタ(倍/半ピッチ誤り緩和) |
+| `--plot` | off | F0 曲線+句境界の PNG を出力 |
+| `--bom` | off | CSV を BOM 付き UTF-8 で出力(Excel で開く場合) |
+| `--jobs` | 4 | 並列数(F0 抽出と MFA に適用) |
+
+## 出力ファイル
+
+`results/` に音声ファイルごとに生成されます:
+
+| ファイル | 内容 |
+|---------|------|
+| `<name>_frames.csv` | フレーム単位(5ms)の F0: 生値 [Hz]、半音値 `f0_st`、z スコア `f0_z`、所属アクセント句 |
+| `<name>_ap_summary.csv` | アクセント句単位の要約: 表記・カナ・アクセント型・モーラ数・時刻・平均/最大/最小/レンジ(半音)・ピーク位置比・有声率・信頼度フラグ |
+| `<name>_ap_contours.csv` | 各句の F0 を等間隔 30 点にリサンプルした時間正規化輪郭(半音値)。句の形状比較用 |
+| `<name>.json` | 上記を統合した構造化データ(単語タイミング含む) |
+| `<name>.TextGrid` | Praat で開いて境界を確認・手修正するための TextGrid |
+| `<name>_f0.png` | (`--plot` 時)F0 曲線+句境界の図 |
+
+`results/work/` に MFA の中間ファイル(コーパス・生成辞書・アラインメント結果)が
+残るので、アラインメントの検証に使えます。
+
+## 正規化の定義
+
+- **半音値**: `f0_st = 12 × log2(F0 / F0_ref)`。`F0_ref` は話者の全有声フレームの
+  幾何平均(既定)。話者間で声の高さの違いを除いた比較ができます。
+- **z スコア**: log F0 の話者単位 z スコア。レンジの個人差も除きたい場合に使用。
+- **時間正規化輪郭**: 各アクセント句の半音値を句内相対時間 0–1 上の等間隔 30 点に
+  線形補間でリサンプルしたもの。無声フレームは補間に使いません
+  (句内の有声フレームが 4 未満の句は全欠損になります)。
+
+## 注意・既知の限界
+
+- **読み・アクセント型は OpenJTalk の推定**です。固有名詞・数字などで読みを誤ることが
+  あります。`ap_summary` の `accent_type` を使う際は精度に注意してください
+  (句境界の誤りは TextGrid を Praat で確認できます)。
+- **テキストと音声が一致していること**が前提です。読み飛ばし・言い直しが多いと
+  アラインメントが破綻します。15 分程度の長尺でも動作しますが、不一致が多い場合は
+  段落単位で音声・テキストを分割すると頑健になります。
+- 1 モーラあたりの長さが極端(30ms 未満 / 500ms 超)な句には `low_confidence=1` が
+  付きます。集計前に除外を検討してください。
+
+## 開発
+
+```bash
+pip install -e ".[dev]"
+python -m pytest tests/
+```
+
+テストは MFA を偽コマンドでモックするため、MFA なしで全件実行できます。

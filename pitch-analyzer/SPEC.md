@@ -1,7 +1,13 @@
 # 日本語朗読音声ピッチ分析ツール 仕様書(案)
 
-バージョン: 0.1(ドラフト)
+バージョン: 0.2(確定)
 作成日: 2026-06-11
+
+> **0.2 での確定事項**(発注者確認済み)
+> - アラインメント: MFA(conda 導入可の環境)。Julius 代替は当面不要
+> - 正規化の主目的: **話者間比較** → 半音変換・z スコアの基準は**話者単位**を既定とする
+> - 輪郭はアクセント句単位で十分(モーラ単位の時刻保持は行わない)
+> - データ規模: 約 15 分 × 20 本(計 ~5 時間)。F0 抽出は並列化オプション(`--jobs`)で対応
 
 ## 1. 目的
 
@@ -55,26 +61,30 @@
 
 ### (3) 強制アラインメント
 
-- 推奨: **Montreal Forced Aligner(MFA)+ japanese_mfa モデル**。
-  - pyopenjtalk の読み(カナ)から MFA 用の発音を生成して辞書登録する。
-- 代替: Julius 音素セグメンテーションキット(MFA が導入できない環境向け)。
-- アラインメント結果(音素境界)を AP 境界に集約し、各 AP の `[t_start, t_end]` を確定する。
-- **品質チェック**: テキストと音声の不一致(読み飛ばし・言い直し)が疑われる箇所は、
-  音素尤度の低さ・極端な音素長を手がかりに警告を出し、該当 AP に `low_confidence` フラグを付ける。
+- **Montreal Forced Aligner(MFA)+ japanese_mfa 音響モデル** を使用する。
+- **単語(カナ)単位のアラインメント方式**を採用する:
+  1. pyopenjtalk(NJD)の単語ごとのカタカナ読みをトークンとして `.lab` 転記ファイルを生成
+  2. 全トークンの発音辞書を `mfa g2p`(japanese_mfa G2P モデル)で自動生成
+     → OOV(辞書未収録語)の問題と音素セット変換の問題を同時に回避
+  3. `mfa align` の出力 TextGrid の words tier から各単語の時刻を取得
+  4. AP = 単語列なので、AP の `[t_start, t_end]` は構成単語の先頭開始〜末尾終了
+- モーラ単位の時刻は保持しない(AP 単位の分析で十分との確認による)。
+- **品質チェック**: 1 モーラあたりの平均長が極端(< 30 ms または > 500 ms)な AP に
+  `low_confidence` フラグを付け、警告を出す。
 
 ### (4) アクセント句ごとの切り出し
 
 - 各 AP について F0 系列(時刻, Hz)を切り出す。前後のポーズは含めない。
-- AP 内のモーラ境界時刻も保持する(モーラ単位の事後分析を可能にするため)。
+- AP 内の単語境界時刻も保持する(事後分析用)。
 
 ### (5) 正規化
 
 複数の正規化を**併記して**出力する(研究目的により使い分けるため):
 
 1. **半音変換(話者正規化)**: `f0_st = 12 * log2(F0 / F0_ref)`
-   - `F0_ref` は既定で「ファイル全体の有声フレームの F0 幾何平均」。
-     `--ref speaker`(複数ファイルの同一話者平均)/ `--ref value:120` 等で変更可。
-2. **z スコア(log 領域)**: `f0_z = (log F0 − μ) / σ`(μ, σ はファイルまたは話者単位)
+   - `F0_ref` の既定は **`speaker`**(同一話者の全ファイルの有声フレームの幾何平均)。
+     話者間比較が主目的のため。`--ref file` / `--ref value:120` 等で変更可。
+2. **z スコア(log 領域)**: `f0_z = (log F0 − μ) / σ`(μ, σ は話者単位、既定)
 3. **時間正規化輪郭**: 各 AP の F0 を等間隔 N 点(既定 N=30)にリサンプリングした
    半音値の輪郭。AP 間の長さ差を除いた形状比較用。
 
@@ -84,11 +94,11 @@
 
 | ファイル | 内容 |
 |---------|------|
-| `<name>_frames.csv` | フレーム単位のロング形式: `file, ap_index, ap_text, mora_index, time_sec, f0_hz, f0_st, f0_z, voiced` |
+| `<name>_frames.csv` | フレーム単位のロング形式: `file, ap_index, ap_text, word_index, time_sec, f0_hz, f0_st, f0_z, voiced` |
 | `<name>_ap_summary.csv` | AP 単位の要約: `ap_index, ap_text, ap_kana, accent_type, mora_count, t_start, t_end, duration, f0_mean_st, f0_max_st, f0_min_st, f0_range_st, peak_time_ratio, voiced_ratio, low_confidence` |
 | `<name>_ap_contours.csv` | 時間正規化輪郭: `ap_index, point_1 … point_N`(半音値) |
 | `<name>.json` | 上記すべてを含む構造化データ(階層: 文 > アクセント句 > モーラ) |
-| `<name>.TextGrid` | Praat 用。tier: phones / moras / accent_phrases(検証・手修正用) |
+| `<name>.TextGrid` | Praat 用。tier: words / phones(MFA 出力)/ accent_phrases(検証・手修正用) |
 | `<name>_f0.png`(オプション) | F0 曲線+AP 境界+AP テキストの可視化 |
 
 - 文字コードはすべて UTF-8。CSV は Excel 互換のため BOM 付きオプションあり。
@@ -110,11 +120,11 @@ pitchan analyze --wav recording.wav --from-textgrid fixed.TextGrid --out results
 主なオプション:
   --f0-floor/--f0-ceil   F0 探索範囲 [Hz](既定 60/500)
   --frame-shift          フレームシフト [ms](既定 5)
-  --ref                  半音変換の基準(file / speaker / value:<Hz>)
+  --ref                  半音変換の基準(speaker / file / value:<Hz>、既定 speaker)
   --norm-points N        時間正規化の点数(既定 30)
   --interpolate          AP 内の無声区間を線形補間
   --plot                 PNG 可視化を出力
-  --aligner              mfa / julius(既定 mfa)
+  --jobs N               並列数(F0 抽出・MFA に適用)
 ```
 
 ## 6. 技術スタック
@@ -143,10 +153,11 @@ pitchan analyze --wav recording.wav --from-textgrid fixed.TextGrid --out results
 3. **Phase 3**: 一括処理・話者単位正規化・ふりがな注記対応
 4. **(将来)**: 出力 JSON をブラウザで閲覧する簡易ビューア(本 GitHub Pages 上に設置可能)
 
-## 9. 未確定事項(要確認)
+## 9. 確定事項(0.2 で解決)
 
-1. アラインメントは MFA で良いか(conda 環境の導入が必要)。Julius 代替を先に作るか。
-2. 正規化の主目的は「話者間比較」か「同一話者内の文体・スタイル比較」か
-   → 基準値(§5 `--ref`)の既定を file にするか speaker にするか。
-3. 時間正規化の点数 N、AP より細かいモーラ単位輪郭の要否。
-4. 想定データ規模(ファイル数・総時間)。大規模なら並列化を Phase 1 から入れる。
+1. アラインメント: MFA で確定(conda 導入可)。Julius 代替は実装しない。
+2. 正規化の主目的は話者間比較 → `--ref` の既定は `speaker`。
+3. 輪郭はアクセント句単位のみ(N=30 既定)。モーラ単位は不要。
+4. データ規模: 15 分 × 約 20 本。F0 抽出に `--jobs` による並列化を Phase 1 から実装。
+   15 分の長尺ファイルの MFA アラインメントは動作するが、不一致が多い場合は
+   段落単位で音声を分割すると頑健になる(README に記載)。
