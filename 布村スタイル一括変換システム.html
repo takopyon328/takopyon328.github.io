@@ -75,7 +75,7 @@
 
     <p>このシステムは以下のパイプラインで動作します。文体プロファイルは<a href="布村スタイル論文変換ツール.html">単発変換ツール</a>と共通です。</p>
     <ol>
-        <li><strong>分割</strong>：アップロードされた論文を段落単位に分割します（見出し・参考文献は自動で変換対象外になります）</li>
+        <li><strong>分割</strong>：アップロードされた論文を段落単位に分割します（見出し・参考文献は自動で変換対象外になります。表はタブ区切りの「表ブロック」として構造を保持し、原形のまま出力されます）</li>
         <li><strong>全体文脈の抽出</strong>：論文全体から用語統一表と章構成の要約を1回だけ抽出し、すべての段落の変換で共通参照します（章をまたぐ用語・表現の統一のため）</li>
         <li><strong>変換</strong>：各段落を、全体文脈と前後の段落を参照しながら布村スタイルに変換します</li>
         <li><strong>検証</strong>：別のモデルが原文と変換文を照合し、主張・数値・引用の改変がないかを確認します</li>
@@ -85,7 +85,7 @@
 
     <h2>ステップ1：論文を読み込む</h2>
     <div class="panel">
-        <p><input type="file" id="fileInput" accept=".docx,.txt"> <span class="note">（.docx または .txt。PDFは一度Wordかテキストに変換してからアップロードしてください）</span></p>
+        <p><input type="file" id="fileInput" accept=".docx,.txt"> <span class="note">（.docx または .txt。PDFは一度Wordかテキストに変換してからアップロードしてください。.docx内の表はタブ区切りで構造を保持して読み込まれ、Excel等に貼り直せます。図（画像）は読み込まれないため元ファイル側で維持してください）</span></p>
         <p>またはテキストを直接貼り付け：</p>
         <textarea id="pasteText" placeholder="ここに論文全文を貼り付けることもできます"></textarea>
         <button id="splitBtn">段落に分割する</button>
@@ -164,8 +164,9 @@ $('fileInput').addEventListener('change', async (e) => {
     try {
         if (file.name.endsWith('.docx')) {
             const buf = await file.arrayBuffer();
-            const result = await mammoth.extractRawText({ arrayBuffer: buf });
-            $('pasteText').value = result.value;
+            // 表構造を保持するためHTML経由で変換し、表はタブ区切りテキストにする
+            const result = await mammoth.convertToHtml({ arrayBuffer: buf });
+            $('pasteText').value = htmlToStructuredText(result.value);
         } else {
             $('pasteText').value = await file.text();
         }
@@ -174,6 +175,33 @@ $('fileInput').addEventListener('change', async (e) => {
         $('splitInfo').textContent = '読み込みエラー：' + err.message;
     }
 });
+
+// docx由来のHTMLを、表をタブ区切り行として保持したテキストに変換する
+function htmlToStructuredText(html) {
+    const doc = new DOMParser().parseFromString(html, 'text/html');
+    const lines = [];
+    for (const el of doc.body.children) {
+        const tag = el.tagName.toLowerCase();
+        if (tag === 'table') {
+            for (const tr of el.querySelectorAll('tr')) {
+                const cells = [...tr.querySelectorAll('th,td')]
+                    .map(td => td.textContent.trim().replace(/\s+/g, ' '));
+                lines.push(cells.join('\t'));
+            }
+            lines.push('');
+        } else if (tag === 'ol' || tag === 'ul') {
+            for (const li of el.querySelectorAll(':scope > li')) {
+                const t = li.textContent.trim();
+                if (t) lines.push(t);
+            }
+            lines.push('');
+        } else {
+            const t = el.textContent.trim();
+            if (t) { lines.push(t); lines.push(''); }
+        }
+    }
+    return lines.join('\n');
+}
 
 // 見出しらしい行の判定：句点を含まず短い行
 function isHeading(t) {
@@ -184,15 +212,29 @@ $('splitBtn').addEventListener('click', () => {
     const text = $('pasteText').value.trim();
     if (!text) { alert('論文を読み込むか、貼り付けてください。'); return; }
 
-    const paras = text.split(/\n+/).map(s => s.trim()).filter(s => s.length > 0);
+    // タブを含む連続行は1つの「表ブロック」としてまとめ、原形のまま通過させる。
+    // docx読み込み時の表も、Wordから直接貼り付けた表も、タブ区切り行として現れる。
+    const rawLines = text.split(/\n+/).map(s => s.trim()).filter(s => s.length > 0);
+    const groups = [];
+    for (const line of rawLines) {
+        const isTableRow = line.includes('\t');
+        const last = groups[groups.length - 1];
+        if (isTableRow && last && last.type === 'table') {
+            last.lines.push(line);
+        } else {
+            groups.push({ type: isTableRow ? 'table' : 'text', lines: [line] });
+        }
+    }
     let inBackMatter = false; // 参考文献・謝辞以降は変換しない
-    chunks = paras.map((p, i) => {
-        if (/^(参考文献|引用文献|謝辞|付録|資料)/.test(p)) inBackMatter = true;
-        const heading = isHeading(p);
+    chunks = groups.map((g, i) => {
+        const original = g.lines.join('\n');
+        if (g.type === 'text' && /^(参考文献|引用文献|謝辞|付録|資料)/.test(original)) inBackMatter = true;
+        const heading = g.type === 'text' && isHeading(original);
         return {
             id: i,
-            original: p,
-            convert: !heading && !inBackMatter,
+            original,
+            type: g.type,
+            convert: g.type === 'text' && !heading && !inBackMatter,
             status: 'pending',
             converted: '',
             issues: []
@@ -202,7 +244,8 @@ $('splitBtn').addEventListener('click', () => {
     renderResults();
     $('globalContext').value = ''; // 新しい論文なので全体文脈をリセット
     const n = chunks.filter(c => c.convert).length;
-    $('splitInfo').textContent = `全${chunks.length}段落に分割しました（うち変換対象 ${n} 段落）。ステップ2で対象を確認してください。`;
+    const t = chunks.filter(c => c.type === 'table').length;
+    $('splitInfo').textContent = `全${chunks.length}ブロックに分割しました（変換対象 ${n} 段落、表 ${t} 件）。ステップ2で対象を確認してください。`;
     $('runBtn').disabled = false;
 });
 
@@ -215,9 +258,13 @@ function renderChunkList() {
     const tb = document.createElement('tbody');
     chunks.forEach(c => {
         const tr = document.createElement('tr');
-        const preview = c.original.length > 80 ? c.original.slice(0, 80) + '…' : c.original;
+        const flat = displayText(c.original);
+        const preview = flat.length > 80 ? flat.slice(0, 80) + '…' : flat;
+        const checker = c.type === 'table'
+            ? '<span class="status-skip">表</span>'
+            : `<input type="checkbox" data-id="${c.id}" ${c.convert ? 'checked' : ''}>`;
         tr.innerHTML = `<td>${c.id + 1}</td>
-            <td style="text-align:center"><input type="checkbox" data-id="${c.id}" ${c.convert ? 'checked' : ''}></td>
+            <td style="text-align:center">${checker}</td>
             <td>${escapeHtml(preview)}</td>`;
         tb.appendChild(tr);
     });
@@ -232,6 +279,11 @@ function renderChunkList() {
 
 function escapeHtml(s) {
     return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+// 表ブロックを画面表示用に整形する（タブ→「｜」、改行→「 ／ 」。出力データは原形のまま）
+function displayText(s) {
+    return s.replace(/\t/g, ' ｜ ').replace(/\n/g, ' ／ ');
 }
 
 // ---------------------------------------------------------------
@@ -331,9 +383,11 @@ function styleSystem() {
 function contextOf(chunk) {
     const prev = chunks[chunk.id - 1];
     const next = chunks[chunk.id + 1];
+    // 表ブロックが隣接する場合もあるため、文脈は先頭500字までに制限する
+    const clip = (s) => s.length > 500 ? s.slice(0, 500) + '…' : s;
     let ctx = '';
-    if (prev) ctx += `【直前の段落（文脈参照用・変換不要）】\n${prev.original}\n\n`;
-    if (next) ctx += `【直後の段落（文脈参照用・変換不要）】\n${next.original}\n\n`;
+    if (prev) ctx += `【直前の段落（文脈参照用・変換不要）】\n${clip(prev.original)}\n\n`;
+    if (next) ctx += `【直後の段落（文脈参照用・変換不要）】\n${clip(next.original)}\n\n`;
     return ctx;
 }
 
@@ -479,10 +533,14 @@ function renderRow(c) {
     const tr = document.getElementById('row-' + c.id);
     if (!tr) return;
     if (!c.convert) {
+        const note = c.type === 'table'
+            ? '（表：構造を保持して原形のまま出力）'
+            : '（変換対象外：原文のまま出力）';
+        const orig = c.type === 'table' ? displayText(c.original) : c.original;
         tr.innerHTML = `<td>${c.id + 1}</td>
-            <td class="original">${escapeHtml(c.original)}</td>
-            <td class="converted status-skip">（変換対象外：原文のまま出力）</td>
-            <td class="status-skip">対象外</td>`;
+            <td class="original">${escapeHtml(orig)}</td>
+            <td class="converted status-skip">${note}</td>
+            <td class="status-skip">${c.type === 'table' ? '表' : '対象外'}</td>`;
         return;
     }
     const [label, cls] = STATUS_LABEL[c.status] || STATUS_LABEL.pending;
