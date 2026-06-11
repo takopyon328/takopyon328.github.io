@@ -296,41 +296,58 @@ async function callClaude({ model, system, user, maxTokens, jsonSchema }) {
         .filter(s => s && s.trim().length > 0)
         .map(s => ({ type: 'text', text: s }));
     systemBlocks[systemBlocks.length - 1].cache_control = { type: 'ephemeral' };
-    const body = {
-        model,
-        max_tokens: maxTokens,
-        thinking: { type: 'adaptive' },
-        system: systemBlocks,
-        messages: [{ role: 'user', content: user }]
-    };
-    if (jsonSchema) {
-        body.output_config = { format: { type: 'json_schema', schema: jsonSchema } };
-    }
-    for (let attempt = 0; attempt < 4; attempt++) {
-        const res = await fetch('https://api.anthropic.com/v1/messages', {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                'x-api-key': $('apiKey').value.trim(),
-                'anthropic-version': '2023-06-01',
-                'anthropic-dangerous-direct-browser-access': 'true'
-            },
-            body: JSON.stringify(body)
-        });
+    let curMax = maxTokens;
+    for (let attempt = 0; attempt < 6; attempt++) {
+        const body = {
+            model,
+            max_tokens: curMax,
+            thinking: { type: 'adaptive' },
+            system: systemBlocks,
+            messages: [{ role: 'user', content: user }]
+        };
+        if (jsonSchema) {
+            body.output_config = { format: { type: 'json_schema', schema: jsonSchema } };
+        }
+        let res;
+        try {
+            res = await fetch('https://api.anthropic.com/v1/messages', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'x-api-key': $('apiKey').value.trim(),
+                    'anthropic-version': '2023-06-01',
+                    'anthropic-dangerous-direct-browser-access': 'true'
+                },
+                body: JSON.stringify(body)
+            });
+        } catch (e) {
+            // ネットワーク断は待って再試行
+            await new Promise(r => setTimeout(r, (2 ** attempt) * 2000));
+            continue;
+        }
         if (res.ok) {
             const data = await res.json();
             const textBlock = data.content.find(b => b.type === 'text');
-            return textBlock ? textBlock.text : '';
+            // 思考トークンが上限を使い切り本文が欠ける場合は、上限を倍にして再試行
+            if (data.stop_reason === 'max_tokens' || !textBlock || !textBlock.text.trim()) {
+                if (curMax < 16000) {
+                    curMax = Math.min(curMax * 2, 16000);
+                    continue;
+                }
+                throw new Error('出力がトークン上限に達しました。この段落を短く分けてから再変換してください。');
+            }
+            return textBlock.text;
         }
         if (res.status === 429 || res.status >= 500) {
+            // レート制限・一時障害：retry-afterを尊重し、ジッターを加えて再試行
             const retryAfter = Number(res.headers.get('retry-after')) || (2 ** attempt) * 2;
-            await new Promise(r => setTimeout(r, retryAfter * 1000));
+            await new Promise(r => setTimeout(r, (retryAfter + Math.random() * 3) * 1000));
             continue;
         }
         const err = await res.json().catch(() => null);
         throw new Error(err?.error?.message || `APIエラー（HTTP ${res.status}）`);
     }
-    throw new Error('リトライ上限に達しました。時間をおいて再実行してください。');
+    throw new Error('リトライ上限に達しました（APIのレート制限の可能性があります）。1〜2分おいてから、エラーの段落の「再変換」を押してください。');
 }
 
 // ---------------------------------------------------------------
@@ -401,6 +418,7 @@ const VERIFY_SYSTEM = `あなたは学術論文の校閲者である。「原文
 2. 数値・統計量・固有名詞の変更
 3. 引用文献（著者名・年）の変更や欠落
 4. 専門用語の置き換えによる意味の変化
+5. 引用の構文上の位置の変更：原文が「著者（年）は〜と主張している」のように著者を主語とする形式なのに、変換文で「〜という主張がある（著者：年）」のような括弧型に変えられている場合（その逆も）は問題として報告する
 文体・語彙・文末表現・接続詞の変更は問題としない。問題がなければ ok を true、issues を空配列とする。`;
 
 const VERIFY_SCHEMA = {
@@ -478,6 +496,8 @@ async function runAll() {
         }
     }
 
+    // 並列数2：3以上にするとAPIのレート制限（分あたりトークン上限）に
+    // かかりやすく、段落単位のエラーが増えるため
     let index = 0;
     const worker = async () => {
         while (index < targets.length && !stopRequested) {
@@ -485,7 +505,7 @@ async function runAll() {
             await processChunk(chunk, model, doVerify);
         }
     };
-    await Promise.all([worker(), worker(), worker()]);
+    await Promise.all([worker(), worker()]);
 
     $('runBtn').disabled = false;
     $('stopBtn').disabled = true;
