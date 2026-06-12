@@ -78,6 +78,8 @@ def _build_parser() -> argparse.ArgumentParser:
         p.add_argument("--median-filter", action="store_true",
                        help="F0 に 5 点メディアンフィルタを適用する")
         p.add_argument("--plot", action="store_true", help="PNG 可視化を出力する")
+        p.add_argument("--plot-ap", action="store_true",
+                       help="アクセント句ごとの PNG を <name>_ap_plots/ に出力する")
         p.add_argument("--bom", action="store_true",
                        help="CSV を BOM 付き UTF-8 で出力する(Excel 用)")
         p.add_argument("--jobs", type=int, default=4,
@@ -203,6 +205,8 @@ def run_pipeline(pairs: list[Pair], args) -> None:
         )
         if args.plot:
             outputs.plot_f0(out_dir / f"{pr.name}_f0.png", times, f0_st, aps)
+        if args.plot_ap:
+            outputs.plot_ap_pngs(out_dir / f"{pr.name}_ap_plots", times, f0_st, aps)
         n_low = sum(ap.low_confidence for ap in aps)
         logger.info(
             "  %s: %d AP 出力 (low_confidence %d 件, ref=%.1f Hz)",

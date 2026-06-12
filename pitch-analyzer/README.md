@@ -61,7 +61,8 @@ pitchan analyze --wav recording.wav --text script.txt --out results/
 | `--norm-points` | 30 | 時間正規化輪郭の点数 |
 | `--interpolate` | off | アクセント句内の無声区間を線形補間 |
 | `--median-filter` | off | F0 の 5 点メディアンフィルタ(倍/半ピッチ誤り緩和) |
-| `--plot` | off | F0 曲線+句境界の PNG を出力 |
+| `--plot` | off | ファイル全体の F0 曲線+句境界の PNG を出力 |
+| `--plot-ap` | off | アクセント句ごとの PNG を `<name>_ap_plots/` に出力(表記・読み・アクセント型・単語境界つき。縦軸はファイル内共通) |
 | `--bom` | off | CSV を BOM 付き UTF-8 で出力(Excel で開く場合) |
 | `--jobs` | 4 | 並列数(F0 抽出と MFA に適用) |
 

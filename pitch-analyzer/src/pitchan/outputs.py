@@ -192,12 +192,8 @@ def write_textgrid(
     tg.save(str(path), format="long_textgrid", includeBlankSpaces=True)
 
 
-def plot_f0(
-    path: Path,
-    times: np.ndarray,
-    f0_st: np.ndarray,
-    aps: list[AccentPhrase],
-) -> None:
+def _setup_matplotlib():
+    """matplotlib を読み込み、日本語フォントを設定する。なければ None。"""
     try:
         import matplotlib
 
@@ -205,14 +201,28 @@ def plot_f0(
         import matplotlib.pyplot as plt
         from matplotlib import font_manager
 
-        jp_fonts = [
-            f for f in ("Noto Sans CJK JP", "IPAexGothic", "Hiragino Sans")
-            if any(f == fm.name for fm in font_manager.fontManager.ttflist)
-        ]
-        if jp_fonts:
-            matplotlib.rcParams["font.family"] = jp_fonts[0]
+        available = {fm.name for fm in font_manager.fontManager.ttflist}
+        for name in (
+            "Noto Sans CJK JP", "IPAexGothic", "Yu Gothic",
+            "Meiryo", "MS Gothic", "Hiragino Sans",
+        ):
+            if name in available:
+                matplotlib.rcParams["font.family"] = name
+                break
+        return plt
     except ImportError:
         logger.warning("matplotlib がないため PNG 出力をスキップします")
+        return None
+
+
+def plot_f0(
+    path: Path,
+    times: np.ndarray,
+    f0_st: np.ndarray,
+    aps: list[AccentPhrase],
+) -> None:
+    plt = _setup_matplotlib()
+    if plt is None:
         return
 
     total = times[-1] if len(times) else 1.0
@@ -239,3 +249,60 @@ def plot_f0(
     fig.tight_layout()
     fig.savefig(path, dpi=120)
     plt.close(fig)
+
+
+def plot_ap_pngs(
+    dir_path: Path,
+    times: np.ndarray,
+    f0_st: np.ndarray,
+    aps: list[AccentPhrase],
+) -> None:
+    """アクセント句ごとに 1 枚の PNG を出力する。
+
+    縦軸スケールはファイル内で共通にし、句どうしの高さ・形状を比較できるようにする。
+    """
+    plt = _setup_matplotlib()
+    if plt is None:
+        return
+    dir_path.mkdir(parents=True, exist_ok=True)
+
+    voiced = f0_st[~np.isnan(f0_st)]
+    if len(voiced):
+        ylo, yhi = np.percentile(voiced, [1, 99])
+        pad = max(1.0, 0.1 * (yhi - ylo))
+        ylo, yhi = ylo - pad, yhi + pad
+    else:
+        ylo, yhi = -12, 12
+
+    for ap in aps:
+        if ap.t_start is None:
+            continue
+        sel = (times >= ap.t_start) & (times <= ap.t_end)
+        fig, ax = plt.subplots(figsize=(6.4, 3.2))
+        ax.plot(times[sel] - ap.t_start, f0_st[sel], ".", markersize=4, color="C0")
+        for w in ap.words:
+            if w.t_start is None:
+                continue
+            if w.t_start > ap.t_start:
+                ax.axvline(w.t_start - ap.t_start, color="gray",
+                           linestyle="--", linewidth=0.7)
+            ax.text(
+                (w.t_start + w.t_end) / 2 - ap.t_start, ylo + 0.02 * (yhi - ylo),
+                w.pron, ha="center", va="bottom", fontsize=8, color="gray",
+            )
+        ax.set_ylim(ylo, yhi)
+        ax.set_xlim(0, ap.t_end - ap.t_start)
+        acc = f"{ap.accent_type}型" if ap.accent_type is not None else "?型"
+        flag = " [low_confidence]" if ap.low_confidence else ""
+        ax.set_title(
+            f"[{ap.index:03d}] {ap.surface} ({ap.kana}) "
+            f"{acc}・{ap.mora_count}モーラ・{ap.t_start:.2f}s〜{flag}",
+            fontsize=9,
+        )
+        ax.set_xlabel("句内時間 [s]")
+        ax.set_ylabel("F0 [半音]")
+        ax.grid(alpha=0.3)
+        fig.tight_layout()
+        kana = ap.kana[:12]
+        fig.savefig(dir_path / f"ap{ap.index:04d}_{kana}.png", dpi=110)
+        plt.close(fig)
