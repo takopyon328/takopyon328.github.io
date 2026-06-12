@@ -159,7 +159,7 @@ def analyze_text(text: str) -> list[AccentPhrase]:
 
 def analyze_text_file(path: str) -> list[AccentPhrase]:
     """テキストファイル全体を解析する。改行・空行はポーズとして扱われる。"""
-    with open(path, encoding="utf-8") as fh:
+    with open(path, encoding="utf-8-sig") as fh:
         lines = [ln.strip() for ln in fh]
     aps: list[AccentPhrase] = []
     for line in lines:
