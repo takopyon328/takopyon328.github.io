@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<title>コメントスクリーン</title>
+<style>
+  * { margin: 0; padding: 0; }
+  html, body { width: 100%; height: 100%; overflow: hidden; }
+  body { background: #000; cursor: default; }
+  body.bg-green { background: #00ff00; }
+  body.bg-white { background: #fff; }
+  #stage { position: fixed; inset: 0; }
+  .comment {
+    position: absolute; white-space: nowrap; font-weight: bold;
+    font-family: "Hiragino Sans", "Yu Gothic", "Meiryo", sans-serif;
+    text-shadow: 2px 2px 2px #000, -1px -1px 2px #000,
+                 1px -1px 2px #000, -1px 1px 2px #000;
+    will-change: transform; left: 100%;
+  }
+  body.bg-white .comment {
+    text-shadow: 2px 2px 2px #999, -1px -1px 2px #999,
+                 1px -1px 2px #999, -1px 1px 2px #999;
+  }
+  #info {
+    position: fixed; bottom: 16px; right: 16px; z-index: 10;
+    background: rgba(0,0,0,.7); color: #fff; padding: 14px 18px;
+    border-radius: 12px; font-family: "Meiryo", sans-serif; font-size: 16px;
+    text-align: center;
+  }
+  #info .url { font-size: 22px; font-weight: bold; color: #ffee58; margin: 6px 0; }
+  #info img { display: block; margin: 8px auto 0; background: #fff; padding: 6px; border-radius: 8px; }
+  #info .hint { font-size: 11px; color: #aaa; margin-top: 8px; }
+  #status {
+    position: fixed; top: 12px; left: 12px; z-index: 10; font-size: 14px;
+    color: #ff5252; font-family: "Meiryo", sans-serif;
+    background: rgba(0,0,0,.7); padding: 6px 10px; border-radius: 8px;
+  }
+  #status:empty { display: none; }
+</style>
+</head>
+<body>
+<div id="stage"></div>
+<div id="info">
+  📱 スマホでコメントを送ろう
+  <div class="url" id="url"></div>
+  <img id="qr" width="140" height="140" alt="">
+  <div class="hint">H: この案内を隠す / F: 全画面 / C: クリア</div>
+</div>
+<div id="status"></div>
+<script type="module">
+import { firebaseConfig, isConfigured } from "./firebase-config.js";
+
+const stage = document.getElementById("stage");
+const statusEl = document.getElementById("status");
+
+// 背景色: screen.html?bg=green (クロマキー用) や ?bg=white も指定可能
+const params = new URLSearchParams(location.search);
+if (params.get("bg") === "green") document.body.classList.add("bg-green");
+if (params.get("bg") === "white") document.body.classList.add("bg-white");
+
+// ルーム(投稿ページと同じ ?room= を付けると授業ごとに分けられる)
+const room = (params.get("room") || "default")
+  .replace(/[^a-zA-Z0-9_-]/g, "").slice(0, 30) || "default";
+
+// 投稿用URLとQRコードを表示
+const postUrl = new URL("./", location.href).href +
+  (room !== "default" ? "?room=" + room : "");
+document.getElementById("url").textContent = postUrl;
+const qr = document.getElementById("qr");
+qr.src = "https://api.qrserver.com/v1/create-qr-code/?size=140x140&data=" +
+         encodeURIComponent(postUrl);
+qr.onerror = () => { qr.style.display = "none"; };
+
+document.addEventListener("keydown", e => {
+  const k = e.key.toLowerCase();
+  if (k === "h") {
+    const info = document.getElementById("info");
+    info.style.display = info.style.display === "none" ? "" : "none";
+  } else if (k === "f") {
+    if (document.fullscreenElement) document.exitFullscreen();
+    else document.documentElement.requestFullscreen();
+  } else if (k === "c") {
+    stage.innerHTML = "";
+    resetLanes();
+  }
+});
+
+// --- レーン管理(コメント同士が重ならないように流す) ---
+const SIZE_PX = { small: 28, medium: 42, large: 60 };
+const DURATION = 8000;   // 画面を横切る時間(ミリ秒)
+const LANE_HEIGHT = 70;
+let lanes = [];
+
+function resetLanes() {
+  const n = Math.max(1, Math.floor(window.innerHeight / LANE_HEIGHT) - 1);
+  lanes = new Array(n).fill(0);   // 各レーンが空く時刻
+}
+resetLanes();
+window.addEventListener("resize", resetLanes);
+
+function pickLane(commentWidth) {
+  const now = performance.now();
+  // コメントの末尾が右端を抜けるまでの時間だけレーンを占有する
+  const speed = (window.innerWidth + commentWidth) / DURATION;
+  const occupy = commentWidth / speed + 500;
+  for (let i = 0; i < lanes.length; i++) {
+    if (lanes[i] <= now) { lanes[i] = now + occupy; return i; }
+  }
+  const i = Math.floor(Math.random() * lanes.length);
+  lanes[i] = now + occupy;
+  return i;
+}
+
+function showComment(c) {
+  const el = document.createElement("div");
+  el.className = "comment";
+  el.textContent = String(c.text || "").slice(0, 60);
+  el.style.color = /^#[0-9a-fA-F]{6}$/.test(c.color) ? c.color : "#ffffff";
+  el.style.fontSize = (SIZE_PX[c.size] || SIZE_PX.medium) + "px";
+  stage.appendChild(el);
+
+  const w = el.offsetWidth;
+  const lane = pickLane(w);
+  el.style.top = (lane * LANE_HEIGHT + 10) + "px";
+
+  const distance = window.innerWidth + w;
+  const anim = el.animate(
+    [{ transform: "translateX(0)" }, { transform: `translateX(-${distance}px)` }],
+    { duration: DURATION, easing: "linear" }
+  );
+  anim.onfinish = () => el.remove();
+}
+
+// --- Firestoreから新着コメントを受信 ---
+if (!isConfigured) {
+  statusEl.textContent = "セットアップが完了していません(firebase-config.js を設定してください)";
+} else {
+  const { initializeApp } = await import("https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js");
+  const { getFirestore, collection, query, where, orderBy, onSnapshot, Timestamp } =
+    await import("https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js");
+
+  const db = getFirestore(initializeApp(firebaseConfig));
+  // ページを開いた時刻より後のコメントだけを流す
+  const q = query(
+    collection(db, "rooms", room, "comments"),
+    where("ts", ">", Timestamp.now()),
+    orderBy("ts")
+  );
+  onSnapshot(q, snap => {
+    statusEl.textContent = "";
+    snap.docChanges().forEach(change => {
+      // serverTimestamp確定前のローカル反映は除外し、確定後のみ表示する
+      if (change.type === "added" && !snap.metadata.hasPendingWrites) {
+        showComment(change.doc.data());
+      }
+    });
+  }, err => {
+    console.error(err);
+    statusEl.textContent = "接続エラー: " + err.code;
+  });
+}
+</script>
+</body>
+</html>

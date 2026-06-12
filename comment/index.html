@@ -1,0 +1,174 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+<title>コメント投稿</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: "Hiragino Sans", "Yu Gothic", "Meiryo", sans-serif;
+    background: #1a1a2e; color: #eee; min-height: 100vh;
+    display: flex; align-items: center; justify-content: center; padding: 16px;
+  }
+  .card {
+    width: 100%; max-width: 480px; background: #16213e;
+    border-radius: 16px; padding: 24px; box-shadow: 0 8px 32px rgba(0,0,0,.4);
+  }
+  h1 { font-size: 1.2rem; margin-bottom: 16px; text-align: center; }
+  .room { text-align: center; font-size: .75rem; color: #888; margin-bottom: 12px; }
+  textarea {
+    width: 100%; font-size: 1.1rem; padding: 12px; border-radius: 10px;
+    border: 2px solid #0f3460; background: #0f1626; color: #fff;
+    resize: none; height: 4.5em; outline: none;
+  }
+  textarea:focus { border-color: #e94560; }
+  .label { font-size: .8rem; color: #aaa; margin: 14px 0 6px; }
+  .colors { display: flex; gap: 10px; flex-wrap: wrap; }
+  .color-btn {
+    width: 36px; height: 36px; border-radius: 50%; border: 3px solid transparent;
+    cursor: pointer; transition: transform .1s;
+  }
+  .color-btn.selected { border-color: #e94560; transform: scale(1.15); }
+  .sizes { display: flex; gap: 8px; }
+  .size-btn {
+    flex: 1; padding: 8px; border-radius: 10px; border: 2px solid #0f3460;
+    background: #0f1626; color: #ccc; cursor: pointer; font-size: .9rem;
+  }
+  .size-btn.selected { border-color: #e94560; color: #fff; background: #1f2a4a; }
+  button.send {
+    width: 100%; margin-top: 20px; padding: 14px; font-size: 1.1rem;
+    font-weight: bold; color: #fff; background: #e94560; border: none;
+    border-radius: 12px; cursor: pointer;
+  }
+  button.send:active { transform: scale(.98); }
+  button.send:disabled { background: #555; }
+  .msg { text-align: center; margin-top: 12px; font-size: .85rem; min-height: 1.2em; }
+  .msg.ok { color: #66bb6a; }
+  .msg.err { color: #ff5252; }
+  .count { text-align: right; font-size: .75rem; color: #888; margin-top: 4px; }
+</style>
+</head>
+<body>
+<div class="card">
+  <h1>💬 コメントを送ろう</h1>
+  <div class="room" id="room-label"></div>
+  <textarea id="text" maxlength="60" placeholder="コメントを入力(60文字まで)" autofocus></textarea>
+  <div class="count"><span id="len">0</span>/60</div>
+  <div class="label">色</div>
+  <div class="colors" id="colors"></div>
+  <div class="label">大きさ</div>
+  <div class="sizes">
+    <button class="size-btn" data-size="small">小</button>
+    <button class="size-btn selected" data-size="medium">中</button>
+    <button class="size-btn" data-size="large">大</button>
+  </div>
+  <button class="send" id="send">送信する</button>
+  <div class="msg" id="msg"></div>
+</div>
+<script type="module">
+import { firebaseConfig, isConfigured } from "./firebase-config.js";
+
+const MAX_LENGTH = 60;
+const MIN_INTERVAL_MS = 1000;   // 連続投稿の最小間隔
+const COLORS = {
+  white: "#ffffff", red: "#ff5252", orange: "#ffa726", yellow: "#ffee58",
+  green: "#66bb6a", cyan: "#4dd0e1", pink: "#f06292"
+};
+
+let color = "white", size = "medium", lastSent = 0;
+
+// ルーム(授業ごとに分けたい場合は ?room=授業名 を付ける)
+const room = (new URLSearchParams(location.search).get("room") || "default")
+  .replace(/[^a-zA-Z0-9_-]/g, "").slice(0, 30) || "default";
+if (room !== "default") {
+  document.getElementById("room-label").textContent = "ルーム: " + room;
+}
+
+const colorsEl = document.getElementById("colors");
+for (const [name, hex] of Object.entries(COLORS)) {
+  const b = document.createElement("button");
+  b.className = "color-btn" + (name === "white" ? " selected" : "");
+  b.style.background = hex;
+  b.onclick = () => {
+    color = name;
+    colorsEl.querySelectorAll(".color-btn").forEach(x => x.classList.remove("selected"));
+    b.classList.add("selected");
+  };
+  colorsEl.appendChild(b);
+}
+
+document.querySelectorAll(".size-btn").forEach(b => {
+  b.onclick = () => {
+    size = b.dataset.size;
+    document.querySelectorAll(".size-btn").forEach(x => x.classList.remove("selected"));
+    b.classList.add("selected");
+  };
+});
+
+const textEl = document.getElementById("text");
+const msgEl = document.getElementById("msg");
+const sendBtn = document.getElementById("send");
+textEl.addEventListener("input", () => {
+  document.getElementById("len").textContent = textEl.value.length;
+});
+textEl.addEventListener("keydown", e => {
+  if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); }
+});
+sendBtn.onclick = send;
+
+function showMsg(text, cls) {
+  msgEl.textContent = text;
+  msgEl.className = "msg " + cls;
+  setTimeout(() => { msgEl.textContent = ""; }, 2500);
+}
+
+if (!isConfigured) {
+  sendBtn.disabled = true;
+  msgEl.textContent = "セットアップが完了していません(firebase-config.js を設定してください)";
+  msgEl.className = "msg err";
+}
+
+// Firebase初期化(設定済みの場合のみ)
+let db, addDoc, collection, serverTimestamp;
+if (isConfigured) {
+  const { initializeApp } = await import("https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js");
+  const fs = await import("https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js");
+  ({ addDoc, collection, serverTimestamp } = fs);
+  db = fs.getFirestore(initializeApp(firebaseConfig));
+}
+
+async function send() {
+  if (!db) return;
+  const text = textEl.value.trim();
+  if (!text) return;
+  if (text.length > MAX_LENGTH) {
+    showMsg(`コメントは${MAX_LENGTH}文字以内です`, "err");
+    return;
+  }
+  if (Date.now() - lastSent < MIN_INTERVAL_MS) {
+    showMsg("投稿が早すぎます。少し待ってください", "err");
+    return;
+  }
+  sendBtn.disabled = true;
+  try {
+    await addDoc(collection(db, "rooms", room, "comments"), {
+      text,
+      color: COLORS[color] || COLORS.white,
+      size,
+      ts: serverTimestamp()
+    });
+    lastSent = Date.now();
+    textEl.value = "";
+    document.getElementById("len").textContent = "0";
+    showMsg("送信しました!", "ok");
+  } catch (err) {
+    console.error(err);
+    showMsg("送信に失敗しました", "err");
+  }
+  sendBtn.disabled = false;
+  textEl.focus();
+}
+</script>
+</body>
+</html>
