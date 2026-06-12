@@ -157,10 +157,27 @@ def analyze_text(text: str) -> list[AccentPhrase]:
     return aps
 
 
+def _read_text_file(path: str) -> str:
+    """UTF-8(BOM可)を優先し、だめなら Shift_JIS(CP932)として読む。"""
+    raw = open(path, "rb").read()
+    try:
+        return raw.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        pass
+    try:
+        text = raw.decode("cp932")
+        logger.info("%s: Shift_JIS として読み込みました", path)
+        return text
+    except UnicodeDecodeError as e:
+        raise ValueError(
+            f"{path}: 文字コードを判別できません (UTF-8 でも Shift_JIS でもありません)。"
+            "UTF-8 で保存し直してください。"
+        ) from e
+
+
 def analyze_text_file(path: str) -> list[AccentPhrase]:
     """テキストファイル全体を解析する。改行・空行はポーズとして扱われる。"""
-    with open(path, encoding="utf-8-sig") as fh:
-        lines = [ln.strip() for ln in fh]
+    lines = [ln.strip() for ln in _read_text_file(path).splitlines()]
     aps: list[AccentPhrase] = []
     for line in lines:
         if not line:

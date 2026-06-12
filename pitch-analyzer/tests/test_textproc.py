@@ -32,3 +32,13 @@ def test_analyze_text_basic():
 def test_analyze_text_empty():
     assert analyze_text("") == []
     assert analyze_text("、、。") == []
+
+
+def test_read_text_file_encodings(tmp_path):
+    from pitchan.textproc import analyze_text_file
+
+    for enc in ("utf-8", "utf-8-sig", "cp932"):
+        p = tmp_path / f"{enc}.txt"
+        p.write_text("私は学生です。", encoding=enc)
+        aps = analyze_text_file(str(p))
+        assert "".join(ap.kana for ap in aps) == "ワタシワガクセーデス"
