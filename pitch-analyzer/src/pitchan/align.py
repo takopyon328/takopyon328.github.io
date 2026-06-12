@@ -65,7 +65,7 @@ def build_g2p_dictionary(
     wordlist.write_text("\n".join(types) + "\n", encoding="utf-8")
     dict_path = work_dir / "corpus_dict.txt"
     _run_mfa_command(
-        ["mfa", "g2p", "--clean", str(wordlist), g2p_model, str(dict_path)]
+        ["mfa", "g2p", str(wordlist), g2p_model, str(dict_path), "--clean"]
     )
     if not dict_path.exists():
         raise AlignmentError("mfa g2p が辞書を生成しませんでした")
@@ -98,12 +98,15 @@ def run_align(
     """mfa align を実行する。out_dir に speaker/name.TextGrid が生成される。"""
     if out_dir.exists():
         shutil.rmtree(out_dir)
+    # MFA(click)は --beam 等の追加設定オプションを位置引数の後に置く必要がある
+    # (前に置くと値がコーパスパスとして解釈される)
     _run_mfa_command(
         [
-            "mfa", "align", "--clean", "--overwrite",
+            "mfa", "align",
+            str(corpus_dir), str(dict_path), acoustic_model, str(out_dir),
+            "--clean", "--overwrite",
             "--beam", str(beam), "--retry_beam", str(retry_beam),
             "--num_jobs", str(num_jobs),
-            str(corpus_dir), str(dict_path), acoustic_model, str(out_dir),
         ]
     )
 
