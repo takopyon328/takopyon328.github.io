@@ -12,7 +12,7 @@ dependencies = [
     "pandas",
     "soundfile",
     "pyworld",
-    "pyopenjtalk",
+    "pyopenjtalk-plus",
     "praatio>=6.0",
 ]
 
