@@ -34,7 +34,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "analyze":
             pairs = [Pair(args.speaker, args.wav.stem, args.wav, args.text)]
         else:
-            pairs = _collect_pairs(args.dir, args.speaker)
+            pairs = _collect_pairs(args.dir, args.speaker, args.out)
             if not pairs:
                 logger.error("%s に .wav/.txt ペアが見つかりません", args.dir)
                 return 1
@@ -91,9 +91,16 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _collect_pairs(root: Path, default_speaker: str) -> list[Pair]:
+def _collect_pairs(
+    root: Path, default_speaker: str, exclude: Path | None = None
+) -> list[Pair]:
     pairs = []
+    # 出力フォルダが入力フォルダの内側にある場合、過去の実行でコピーされた
+    # 音声(work/corpus 等)を拾わないよう除外する。
+    exclude_resolved = exclude.resolve() if exclude is not None else None
     for wav in sorted(root.rglob("*.wav")):
+        if exclude_resolved is not None and exclude_resolved in wav.resolve().parents:
+            continue
         txt = wav.with_suffix(".txt")
         if not txt.exists():
             logger.warning("%s: 対応する .txt がないためスキップ", wav.name)

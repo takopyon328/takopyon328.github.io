@@ -67,6 +67,22 @@ def test_e2e_batch(tmp_path, fake_mfa_on_path):
     assert (out_dir / "sample.TextGrid").exists()
 
 
+def test_collect_pairs_excludes_output_dir(tmp_path):
+    from pitchan.cli import _collect_pairs
+
+    data = tmp_path / "data"
+    data.mkdir()
+    (data / "a.wav").write_bytes(b"")
+    (data / "a.txt").write_text("x", encoding="utf-8")
+    # 出力フォルダが入力フォルダ内にあり、過去の実行のコピーが残っている状況
+    leftover = data / "results" / "work" / "corpus" / "spk"
+    leftover.mkdir(parents=True)
+    (leftover / "a.wav").write_bytes(b"")  # コピー(.lab はあるが .txt はない)
+
+    pairs = _collect_pairs(data, "spk", exclude=data / "results")
+    assert [p.name for p in pairs] == ["a"]  # 元の 1 件のみ、コピーは無視
+
+
 def test_e2e_missing_mfa(tmp_path, monkeypatch):
     if shutil.which("mfa"):
         pytest.skip("実物の mfa が存在する環境ではスキップ")
